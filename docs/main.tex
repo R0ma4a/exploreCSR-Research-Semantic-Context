@@ -1,0 +1,51 @@
+\documentclass[11pt, oneside]{article}   	% use "amsart" instead of "article" for AMSLaTeX format
+\usepackage{geometry}
+\usepackage[]{algorithm2e}
+\geometry{letterpaper}
+\usepackage{graphicx}
+\usepackage{amssymb}
+\usepackage{amsthm}
+\usepackage{parskip}
+\usepackage{textcomp}
+\usepackage{amsmath}
+
+\graphicspath{ {images/} }
+
+\newtheorem{theorem}{Theorem}
+\newtheorem{lemma}{Lemma}
+
+\begin{document}
+
+\input{titlepage}
+
+\section{Proposal}
+
+\subsection{Description}
+
+The question guiding this proposal is whether scalability of an object across frames and resolutions can still preserve its semantic connotation. As modern reconstruction pipelines increasingly rely on deep learning, RGB-D systems now capture not only geometry but also contextual meaning. Despite these advances, semantics is often weakened when an object appears at different depths, scales, or viewpoints. A close-up texture, for instance, may lose its association with the larger structure from which it originated. In this proposal, semantics refers to meaning that extends beyond literal labeling and instead captures contextual relationships between observations of the same object over time.
+
+We propose a pipeline that maintains semantic continuity by linking scale-dependent observations into a consistent coordinate-based representation. The input can be viewed as a sequence of RGB-D images obtained via the SimpleRecon pipeline from a video or a collection of related images. Each frame is processed simultaneously by two modules: a segmentation module and a scene reference module. The segmentation module uses DINO to identify objects and produce semantic feature embeddings. The scene reference module uses CAPTRA to estimate object pose, scale, translation, and rotation in a stable reference frame, thereby reducing noise and maintaining geometric consistency across frames.
+
+Both streams are then combined using a multi-layer perceptron (MLP). The MLP receives semantic embeddings from DINO and coordinate transformations from CAPTRA, and produces a unified graph representation with two axes. In this graph, the $x$-axis represents translation and rotation features, while the $y$-axis represents semantic features. This graph preserves semantic continuity across scale changes without introducing feedback loops or iterative prompting. The output, therefore, does not reconstruct a full scene but instead encodes relationships between semantic meaning and spatial transformations in a structured coordinate space.
+
+This approach ensures that semantic connotations remain linked even when the same object appears at different scales. For example, a close-up image of tree bark can still be associated with the larger tree previously observed. The system preserves coarse context while allowing fine-grained observations to refine the graph representation. By combining segmentation and reference alignment into a single forward pipeline, the model retains semantic meaning without sacrificing scalability.
+
+\newpage
+
+\subsection{Proposed Pipeline Diagram}
+
+\begin{center}
+
+  \includegraphics[width=1\linewidth]{img/exploreCSR Process Brainstorm 21Feb.png}
+
+\end{center}
+
+\subsection{Validation}
+
+To validate semantic retention, we examine whether the graph preserves relationships between coarse and fine observations of the same object. Suppose an object appears first as a full structure and later as a close-up fragment. The segmentation module assigns semantic features to both observations, while the reference module aligns their spatial transformations. Because both outputs are merged into a single coordinate graph, the system can retain that the fragment corresponds to the previously observed object. 
+
+If the graph maintains consistent semantic coordinates across frames and transformations, then semantic connotation has been preserved despite changes in scale. Empirical evaluation would compare semantic consistency across frames before and after MLP combination. A successful outcome occurs when scale-variant observations map to nearby regions in the semantic coordinate space while still preserving geometric distinctions.
+
+This demonstrates that semantic connotation can be maintained across scalable representations by jointly modeling semantic features and spatial transformations in a unified graph structure.
+
+\end{document}
