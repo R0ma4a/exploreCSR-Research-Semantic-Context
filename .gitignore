@@ -1,0 +1,6 @@
+[._]*.sw[a-p]
+[._]*.s[a-v][a-z]
+Session.vim
+Sessionx.vim
+
+*.env
