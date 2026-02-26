@@ -4,3 +4,4 @@ Session.vim
 Sessionx.vim
 
 *.env
+Depth-Anything-V2/checkpoints/*.pth
