@@ -6,3 +6,4 @@ Sessionx.vim
 *.env
 RGed-research/Depth-Anything-V2/checkpoints/*.pth
 RGed-research/*__pycache__/
+depth_gpu_env/*
