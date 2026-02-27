@@ -14,7 +14,7 @@ __pycache__/
 *.pyd
 
 # DepthAnything checkpoints (large model weights)
-RGed-research/Depth-Anything-V2/checkpoints/*.pth
+Depth-Anything-V2/checkpoints/*.pth
 
 # Optional: logs, temporary outputs
 *.log
