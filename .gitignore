@@ -3,7 +3,28 @@
 Session.vim
 Sessionx.vim
 
+# Environment files
 *.env
+depth_gpu_env/
+
+# Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# DepthAnything checkpoints (large model weights)
 RGed-research/Depth-Anything-V2/checkpoints/*.pth
-RGed-research/*__pycache__/
-depth_gpu_env/*
+
+# Optional: logs, temporary outputs
+*.log
+*.tmp
+*.npz
+*.npy
+*.png
+*.jpg
+*.jpeg
+
+# VSCode or IDE settings (optional)
+.vscode/
+.idea/
