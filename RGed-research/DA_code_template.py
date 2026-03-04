@@ -50,6 +50,6 @@ cv2.waitKey(0)
 cv2.destroyAllWindows()
 
 #-- Save Image--
-cv2.imwrite(r"D:\Research Projects\exploreCSR-Research-Semantic-Context\RGed-research\imgs\rgbd_output.png", rgbd)
+cv2.imwrite(r"D:\Research Projects\exploreCSR-Research-Semantic-Context\RGed-research\imgs\test.png", rgbd)
 combined = np.hstack((rgb_image, depth_color))
 cv2.imshow("RGB and Depth", combined)

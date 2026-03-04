@@ -13,6 +13,11 @@ class DepthAnything:
         self.model = self.model.to(self.device)
         self.model.eval()
 
+    def load_rgb_image(self, image_path):
+        image = cv2.imread(image_path)
+        rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        return rgb_image
+
     def image_to_tensor(self, image_path):
         image = cv2.imread(image_path)
 
@@ -20,13 +25,13 @@ class DepthAnything:
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         original_height = image.shape[0]
         original_width = image.shape[1]
-        image = cv2.resize(image, (518, 518))
+        image = cv2.resize(image, (512, 512))
 
         # --Normalize and Prepare for Model--
         image = image.astype(np.float32) / 255.0
         image = np.transpose(image, (2, 0, 1))
         image_tensor = torch.from_numpy(image).unsqueeze(0) 
-        # output shape: (1, 3, 518, 518) -> (batch_size, channels, height, width)
+        # output shape: (1, 3, 512, 512) -> (batch_size, channels, height, width)
         return image_tensor.to(self.device), rgb_image, original_width, original_height
     
     def predict_depth(self, image_tensor):
