@@ -7,9 +7,27 @@ import matplotlib.pyplot as plt
 class DepthAnything:
     
     # --Initialize Class Model--
-    def __init__(self): 
-        self.model = dpt.DepthAnythingV2(encoder='vitb', features=256, out_channels=[256, 512, 1024, 1024], use_bn=False, use_clstoken=False)
+    def __init__(self, checkpoint_path):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        self.model = dpt.DepthAnythingV2(
+            encoder='vitb',
+            features=128,
+            out_channels=[96, 192, 384, 768],
+            use_bn=False,
+            use_clstoken=False
+        )
+
+        # --- Load checkpoint ---
+        state_dict = torch.load(
+            checkpoint_path,
+            map_location=self.device,
+            weights_only=True
+        )
+
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model.load_state_dict(state_dict)
+
         self.model = self.model.to(self.device)
         self.model.eval()
 
@@ -25,13 +43,13 @@ class DepthAnything:
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         original_height = image.shape[0]
         original_width = image.shape[1]
-        image = cv2.resize(image, (512, 512))
+        image = cv2.resize(image, (518, 518))
 
         # --Normalize and Prepare for Model--
         image = image.astype(np.float32) / 255.0
         image = np.transpose(image, (2, 0, 1))
         image_tensor = torch.from_numpy(image).unsqueeze(0) 
-        # output shape: (1, 3, 512, 512) -> (batch_size, channels, height, width)
+        # output shape: (1, 3, 518, 518) -> (batch_size, channels, height, width)
         return image_tensor.to(self.device), rgb_image, original_width, original_height
     
     def predict_depth(self, image_tensor):
@@ -41,33 +59,49 @@ class DepthAnything:
             
         return depth
     
-    def process_rgbd(self, depth, rgb_image, original_width, original_height):
-        depth_min = depth.min()
-        depth_max = depth.max()
+    def process_depth(self, depth, original_width, original_height):
+        # --- Remove extreme outliers (huge improvement) ---
+        low, high = np.percentile(depth, (2, 98))
+        depth = np.clip(depth, low, high)
 
-        if depth_max - depth_min > 1e-6:
-            depth_norm = (depth - depth_min) / (depth_max - depth_min)
-        else:
-            depth_norm = np.zeros_like(depth)
-        depth_norm = cv2.resize(depth_norm, (original_width, original_height))
+        # --- Normalize ---
+        depth_norm = (depth - depth.min()) / (depth.max() - depth.min() + 1e-8)
 
-        depth_norm = np.expand_dims(depth_norm, axis=2)
-        rgbd = np.concatenate((rgb_image, depth_norm), axis=2)
+        # --- Resize to original resolution ---
+        depth_norm = cv2.resize(
+            depth_norm,
+            (original_width, original_height),
+            interpolation=cv2.INTER_CUBIC
+        )
 
-        return rgbd, depth_norm
+        # --- Smooth patch artifacts slightly ---
+        depth_norm = cv2.GaussianBlur(depth_norm, (5, 5), 0)
+
+        return depth_norm
     
     def visualize_depth(self, depth_norm):
-        depth_vis = (depth_norm * 255).astype("uint8")
+        print("min:", depth_norm.min())
+        print("max:", depth_norm.max())
+        print("dtype:", depth_norm.dtype)
+        plt.figure(figsize=(8, 6))
+        plt.imshow(depth_norm, cmap='plasma')
+        plt.colorbar()
+        plt.axis('off')
+        plt.show()
+
+    def save_depth(self, depth_norm, output_path, name):
+        # Convert to 0–255
+        depth_8bit = (depth_norm * 255).astype("uint8")
+
+        # Apply colormap
+        depth_color = cv2.applyColorMap(depth_8bit, cv2.COLORMAP_PLASMA)
+
+        # Save colored version
+        cv2.imwrite(f"{output_path}{name}_depth_color.png", depth_color)
+
+    def create_side_by_side(self, rgb_image, depth_norm):
+        depth_vis = (depth_norm.squeeze() * 255).astype("uint8")
         depth_color = cv2.applyColorMap(depth_vis, cv2.COLORMAP_INFERNO)
-        cv2.imshow("Depth", depth_color)
-        cv2.waitKey(0)
-        cv2.destroyAllWindows()
 
-    def save_rgbd(self, rgbd, output_path, name):
-        output_file = f"{output_path}{name}.jpg"
-
-        if rgbd.dtype != np.uint8:
-            rgbd_norm = (rgbd - rgbd.min()) / (rgbd.max() - rgbd.min())
-            rgbd = (rgbd_norm * 255).astype(np.uint8)
-
-        cv2.imwrite(output_file, rgbd)
+        combined = np.hstack((rgb_image, depth_color))
+        return combined

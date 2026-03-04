@@ -1,11 +1,18 @@
 import depth_anything
 
 image_path = r"D:\Research Projects\exploreCSR-Research-Semantic-Context\RGed-research\imgs\test_img.jpeg"
+weights = r"D:\Research Projects\exploreCSR-Research-Semantic-Context\RGed-research\checkpoints\depth_anything_v2_vitb.pth"
 
-rgbd = depth_anything.DepthAnything()
-image_tensor, rgb_image, original_width, original_height = rgbd.image_to_tensor(image_path)
-depth = rgbd.predict_depth(image_tensor)
-rgbd_image, depth_norm = rgbd.process_rgbd(depth, rgb_image, original_width, original_height)
-rgbd.visualize_depth(depth_norm)
-rgbd.save_rgbd(rgbd_image, "D:\\Research Projects\\exploreCSR-Research-Semantic-Context\\RGed-research\\imgs\\", "test_imgrgbd")
-print(rgbd_image.shape, rgbd_image.dtype, rgbd_image.min(), rgbd_image.max())
+depthAnything = depth_anything.DepthAnything(weights)
+
+image_tensor, rgb_image, original_width, original_height = depthAnything.image_to_tensor(image_path)
+
+depth = depthAnything.predict_depth(image_tensor)
+
+depth_norm = depthAnything.process_depth(depth, original_width, original_height)
+
+depthAnything.visualize_depth(depth_norm)
+
+depthAnything.save_depth(depth_norm, r"D:\Research Projects\exploreCSR-Research-Semantic-Context\RGed-research\imgs\\", "test_output")
+
+
