@@ -16,7 +16,6 @@ __pycache__/
 # DepthAnything checkpoints (large model weights)
 RGed-research/checkpoints/
 
-
 # Optional: logs, temporary outputs
 *.log
 *.tmp
