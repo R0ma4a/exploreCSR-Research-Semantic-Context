@@ -28,3 +28,16 @@ RGed-research/checkpoints/
 # VSCode or IDE settings (optional)
 .vscode/
 .idea/
+
+*.un~
+
+*.env
+RGed-research/Depth-Anything-V2/checkpoints/*.pth
+
+SimpleRecon/Output_dir
+
+SimpleRecon/simplerecon
+
+SimpleRecon/Work_dir
+
+SimpleRecon/tools/__pycache__
