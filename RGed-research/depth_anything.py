@@ -97,7 +97,7 @@ class DepthAnything:
         depth_color = cv2.applyColorMap(depth_8bit, cv2.COLORMAP_PLASMA)
 
         # Save colored version
-        cv2.imwrite(f"{output_path}{name}_depth_color.png", depth_color)
+        cv2.imwrite(f"{output_path}{name}_depth.png", depth_color)
 
     def create_side_by_side(self, rgb_image, depth_norm):
         depth_vis = (depth_norm.squeeze() * 255).astype("uint8")
