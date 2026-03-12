@@ -29,7 +29,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 WORK_DIR="$REPO_ROOT/Work_dir"                                  # Working directory (contains IMG_DIR)
-IMG_DIR="$WORK_DIR/Input_IMGs/Related_IMGs_4"                    # Folder of input photos
+IMG_DIR="$WORK_DIR/Input_IMGs/Related_IMGs_3"                    # Folder of input photos
 OUT_DIR="$REPO_ROOT/Output_dir"                                 # Final export output root (sibling of Work_dir)
 COLMAP_DB="${COLMAP_DB:-colmap_db}"
 SPARSE_DIR="${SPARSE_DIR:-sparse}"
@@ -51,6 +51,16 @@ EXPORT_SCRIPT="${SCRIPT_DIR}/export_rgbd_from_simplerecon_cache.py"
 echo "=== Step 1: COLMAP ==="
 cd "$WORK_DIR"
 mkdir -p "$COLMAP_DB" "$SPARSE_DIR" "$DENSE_DIR"
+
+# Start from a clean COLMAP database / sparse model each run so old images
+# from previous experiments do not linger in database.db.
+if [ -f "$COLMAP_DB/database.db" ]; then
+  rm -f "$COLMAP_DB/database.db"
+fi
+if [ -d "$SPARSE_DIR" ]; then
+  rm -rf "$SPARSE_DIR"
+  mkdir -p "$SPARSE_DIR"
+fi
 
 if [ ! -d "$IMG_DIR" ]; then
   echo "Error: IMG_DIR does not exist: $IMG_DIR"
