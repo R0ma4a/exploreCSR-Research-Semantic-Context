@@ -19,16 +19,24 @@
 
 \input{titlepage}
 
+\newpage
+
+\section{Changes / Discussion:}
+
+\begin{itemize}
+    \item The proposed pipeline now takes RGB images as input, uses DINO to generate an object mask, passes that mask into the scene reference branch, and introduces an RGB-D processing stage before CAPTRA. The combined output is still mapped into a structured graph where the $x$-axis tracks pose change, such as translation, rotation, and scale, while the $y$-axis tracks feature change through vector comparison and cosine similarity.
+\end{itemize}
+
 \section{Proposal}
 
 \subsection{Description}
 
- As modern reconstruction pipelines increasingly rely on deep learning, RGB-D systems now capture not only geometry but also contextual meaning. Despite these advances, semantics is often weakened when an object appears at different depths, scales, or viewpoints. A close-up texture, for instance, may lose its association with the larger structure from which it originated. 
+As modern reconstruction pipelines increasingly rely on deep learning, RGB-D systems now capture not only geometry but also contextual meaning. Despite these advances, semantics is often weakened when an object appears at different depths, scales, or viewpoints. A close-up texture, for instance, may lose its association with the larger structure from which it originated. 
  
- To address these challenges, many state-of-the-art systems train self-supervised models from large scale datasets to perform high-level structural and per-part representations. These models succeed in classifying objects and scenes in static images, able to learn visual semantics of their trained datasets. However, they continue to fail still when those static images become dynamic in scalability.
+To address these challenges, many state-of-the-art systems train self-supervised models from large scale datasets to perform high-level structural and per-part representations. These models succeed in classifying objects and scenes in static images, able to learn visual semantics of their trained datasets. However, they continue to fail still when those static images become dynamic in scalability.
  
  
- The question guiding this proposal is whether scalability of an object across frames and resolutions can still preserve its semantic connotation. In this proposal, semantics refers to meaning that extends beyond literal labeling and instead captures contextual relationships between observations of the same object over time.
+The question guiding this proposal is whether scalability of an object across frames and resolutions can still preserve its semantic connotation. In this proposal, semantics refers to meaning that extends beyond literal labeling and instead captures contextual relationships between observations of the same object over time.
 
 \subsection{Methodology}
 \subsubsection{Research Questions} 
@@ -42,26 +50,26 @@
 
 \begin{center}
 
-  \includegraphics[width=0.85\linewidth]{img/exploreCSR Process Brainstorm v1.2.png}
+  \includegraphics[width=0.85\linewidth]{img/exploreCSR Process Brainstorm v2.0.png}
 
 \end{center}
 
-We propose a pipeline that maintains semantic continuity by linking scale-dependent observations into a consistent coordinate-based representation. The input can be viewed as a sequence of RGB-D images from a video or a collection of related images. Each frame is processed simultaneously by two modules: a segmentation module and a scene reference module. The segmentation module uses DINO to identify objects and produce semantic feature embeddings. The scene reference module uses CAPTRA to estimate object pose, scale, translation, and rotation in a stable reference frame, thereby reducing noise and maintaining geometric consistency across frames.
+We propose a pipeline that maintains semantic continuity by linking scale-dependent observations into a consistent coordinate-based representation. The input would be a sequence of RGB images from a video or a collection of related images. Each frame is processed through two connected modules: a segmentation module and a scene reference module. The segmentation module uses DINO to identify objects and produce an object mask. That mask is then passed into the scene reference module, which first uses an RGB-D processor to recover depth-aware information before CAPTRA estimates object pose, scale, translation, and rotation in a stable reference frame. In this way, the scene reference branch is no longer independent of segmentation and instead uses the object mask to focus geometric estimation on the relevant object region.
 
 %obtained via the SimpleRecon pipeline
 
-Both streams are then combined using a multi-layer perceptron (MLP). The MLP receives semantic embeddings from DINO and coordinate transformations from CAPTRA, and produces a unified graph representation with two axes. In this graph, the $x$-axis represents translation and rotation features, while the $y$-axis represents semantic features. This graph preserves semantic continuity across scale changes without introducing feedback loops or iterative prompting. The output, therefore, does not reconstruct a full scene but instead encodes relationships between semantic meaning and spatial transformations in a structured coordinate space.
+Both streams are then combined using a multi-layer perceptron (MLP). The MLP receives pose-related outputs from CAPTRA together with feature information derived from the segmented observations, and produces a unified graph representation with two axes. In this graph, the $x$-axis represents change in pose, including translation, rotation, and scale or zoom. The $y$-axis represents change in features, where observations are encoded as vectors and compared through cosine similarity. This graph preserves semantic continuity across scale changes without introducing feedback loops or iterative prompting. The output, therefore, does not reconstruct a full scene but instead encodes relationships between visual feature change and spatial transformation in a structured coordinate space.
 
-This approach ensures that semantic connotations remain linked even when the same object appears at different scales. For example, a close-up image of tree bark can still be associated with the larger tree previously observed. The system preserves coarse context while allowing fine-grained observations to refine the graph representation. By combining segmentation and reference alignment into a single forward pipeline, the model retains semantic meaning without sacrificing scalability.
+This approach ensures that semantic connotations remain linked even when the same object appears at different scales. For example, a close-up image of tree bark can still be associated with the larger tree previously observed. The object mask produced by DINO helps isolate the relevant region, while the RGB-D processor and CAPTRA preserve its reference across frames. The system therefore preserves coarse context while allowing fine-grained observations to refine the graph representation. By combining segmentation, mask-guided reference alignment, and feature comparison into a single forward pipeline, the model retains semantic meaning without sacrificing scalability.
 
 \subsubsection{Validation}
 
 
-To validate semantic retention, we examine whether the graph preserves relationships between coarse and fine observations of the same object. Suppose an object appears first as a full structure and later as a close-up fragment. The segmentation module assigns semantic features to both observations, while the reference module aligns their spatial transformations. Because both outputs are merged into a single coordinate graph, the system can retain that the fragment corresponds to the previously observed object. 
+To validate semantic retention, we examine whether the graph preserves relationships between coarse and fine observations of the same object. Suppose an object appears first as a full structure and later as a close-up fragment. The segmentation module assigns an object mask to both observations, while the scene reference module uses the corresponding RGB-D information to align their pose and scale. Because both outputs are merged into a single coordinate graph, the system can retain that the fragment corresponds to the previously observed object. 
 
-If the graph maintains consistent semantic coordinates across frames and transformations, then semantic connotation has been preserved despite changes in scale. Empirical evaluation would compare semantic consistency across frames before and after MLP combination. A successful outcome occurs when scale-variant observations map to nearby regions in the semantic coordinate space while still preserving geometric distinctions.
+If the graph maintains consistent feature similarity across frames while tracking pose change separately, then semantic connotation has been preserved despite changes in scale. Empirical evaluation would compare semantic consistency across frames before and after MLP combination. A successful outcome occurs when scale-variant observations map to nearby regions along the feature axis by cosine similarity while still preserving distinct pose coordinates along the spatial axis.
 
-This demonstrates that semantic connotation can be maintained across scalable representations by jointly modeling semantic features and spatial transformations in a unified graph structure.
+This demonstrates that semantic connotation can be maintained across scalable representations by jointly modeling feature change and spatial transformation in a unified graph structure.
 
 \subsubsection{Timetable}
 
@@ -78,5 +86,7 @@ This demonstrates that semantic connotation can be maintained across scalable re
     \hline
   \end{tabularx}
 \end{center}
+
+
 
 \end{document}
