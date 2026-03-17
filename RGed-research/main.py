@@ -5,7 +5,7 @@ import numpy as np
 # ------------------------------------------------
 # Paths
 # ------------------------------------------------
-image_path = r"D:\Research Projects\exploreCSR-Research-Semantic-Context\RGed-research\imgs\obj00004\img00003.jpeg"
+image_path = r"D:\Research Projects\exploreCSR-Research-Semantic-Context\RGed-research\imgs\obj00001\img00001.jpeg"
 weights = r"D:\Research Projects\exploreCSR-Research-Semantic-Context\RGed-research\checkpoints\depth_anything_v2_vitb.pth"
 
 # ------------------------------------------------
