@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 
 class dino:
 
-    def __init__(self, model_name="vit_small_patch8_dinov3", device=None):
+    def __init__(self, model_name="vit_small_patch16_224.dino", device=None):
         self.device = device if device else torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.model = timm.create_model(model_name, pretrained=True)
@@ -96,26 +96,44 @@ class dino:
     # CAPTRA-based OBJECT MASK GENERATION
     # ========================================================
 
+
     def get_attention_map(self, image_tensor):
+
         image_tensor = image_tensor.to(self.device)
 
+        # --- Save original size ---
+        _, _, H, W = image_tensor.shape
+
+        # --- Resize to 224 for DINO ---
+        image_resized = F.interpolate(
+            image_tensor,
+            size=(224, 224),
+            mode='bilinear',
+            align_corners=False
+        )
+
         with torch.no_grad():
-            attn = self.model.get_last_selfattention(image_tensor)
+            features = self.model.forward_features(image_resized)
 
-        attn = attn[0]          # [heads, tokens, tokens]
-        attn = attn.mean(0)     # average heads
+        # remove CLS token
+        patch_tokens = features[:, 1:, :]   # [1, N, D]
 
-        cls_attn = attn[0, 1:]  # CLS → patches
+        N = patch_tokens.shape[1]
+        side = int(N ** 0.5)
 
-        N = cls_attn.shape[0]
-        side = int(math.sqrt(N))
+        patch_grid = patch_tokens.reshape(1, side, side, -1)
 
-        attn_map = cls_attn.reshape(side, side).cpu().numpy()
+        # --- Feature norm ---
+        attn_map = torch.norm(patch_grid, dim=-1).squeeze().cpu().numpy()
 
         # normalize
         attn_map = (attn_map - attn_map.min()) / (attn_map.max() - attn_map.min() + 1e-8)
 
-        return attn_map
+        # --- 🔥 Upsample BACK to original size ---
+        attn_map = torch.tensor(attn_map).unsqueeze(0).unsqueeze(0)
+        attn_map = F.interpolate(attn_map, size=(H, W), mode='bilinear', align_corners=False)
+
+        return attn_map.squeeze().numpy()
 
     def create_foreground_mask(self, attn_map, threshold=0.6):
         return (attn_map > threshold).astype(np.uint8)
@@ -173,6 +191,13 @@ class dino:
 
         # 2. Foreground
         mask = self.create_foreground_mask(attn_map, threshold=0.6)
+
+        # Resize mask to match depth map
+        mask = cv2.resize(
+            mask.astype(np.uint8),
+            (depth_map.shape[1], depth_map.shape[0]),
+            interpolation=cv2.INTER_NEAREST
+        ).astype(bool)
 
         # 3. Depth fusion
         mask = self.fuse_depth(mask, depth_map, depth_weight=0.6)
