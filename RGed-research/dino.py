@@ -201,15 +201,14 @@ class dino:
         plt.axis('off')
         plt.show()
 
-        def visualize_masked_image(self, image_path, mask):
-            img = cv2.imread(image_path)
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            img = cv2.resize(img, (mask.shape[1], mask.shape[0]))
+    def visualize_masked_image(self, image_path, mask):
+        img = cv2.imread(image_path)
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        img = cv2.resize(img, (mask.shape[1], mask.shape[0]))
 
-            masked_img = img.copy()
-            masked_img[mask == 0] = 0
-
-            plt.imshow(masked_img)
-            plt.title("Masked Image (CAPTRA Input)")
-            plt.axis('off')
-            plt.show()
+        masked_img = img.copy()
+        masked_img[mask == 0] = 0
+        plt.imshow(masked_img)
+        plt.title("Masked Image (CAPTRA Input)")            
+        plt.axis('off')
+        plt.show()
