@@ -118,61 +118,64 @@ class dino:
     # CAPTRA-based OBJECT MASK GENERATION  (improved)
     # ========================================================
 
-    def get_attention_map(self, image_tensor):
+    def get_attention_map(self, image_tensor, top_k_heads=None):
         """
         Returns a foreground saliency map using the TRUE CLS self-attention
-        from DINO's last transformer block, averaged across all heads.
+        from DINO's last transformer block.
 
-        Key fix vs. original:
-          - Uses real attention weights (CLS→patches) via forward hook
-            instead of patch feature norms, which are NOT attention.
-          - Input is padded to the nearest multiple of patch_size rather
-            than squished to 224×224, preserving aspect ratio.
-          - Threshold is computed adaptively (Otsu on the attention map)
-            instead of a fixed scalar.
+        Instead of naively averaging ALL heads (which dilutes the signal with
+        diffuse background-attending heads), we select only the most "focused"
+        heads by ranking on Shannon entropy:
+          - Low entropy  -> concentrated attention -> object-like head  (keep)
+          - High entropy -> diffuse attention      -> background head   (drop)
+
+        Parameters
+        ----------
+        top_k_heads : int or None
+            Number of lowest-entropy heads to use.
+            None -> auto, keeps the bottom 50% of heads by entropy.
         """
         image_tensor = image_tensor.to(self.device)
         _, _, H_orig, W_orig = image_tensor.shape
 
-        # --- Resize to nearest multiple of patch_size ---
-        # dynamic_img_size=True (set in __init__) lifts the 224×224 assertion,
-        # so we can use any multiple of patch_size.  We still need to snap to a
-        # multiple so patch_embed divides evenly.
+        # --- Snap to nearest multiple of patch_size ---
         p = self.patch_size
         H_pad = math.ceil(H_orig / p) * p
         W_pad = math.ceil(W_orig / p) * p
         image_padded = F.interpolate(
-            image_tensor,
-            size=(H_pad, W_pad),
-            mode='bilinear',
-            align_corners=False
+            image_tensor, size=(H_pad, W_pad),
+            mode='bilinear', align_corners=False
         )
 
-        # --- Forward pass (hook fires and stores self._attn_weights) ---
+        # --- Forward pass (hook fires -> self._attn_weights) ---
         with torch.no_grad():
             _ = self.model.forward_features(image_padded)
 
-        # _attn_weights: [B, heads, N_tokens, N_tokens]
-        # N_tokens = 1 (CLS) + H_patches * W_patches
-        attn = self._attn_weights  # [1, heads, N, N]
-
-        # CLS token attends to all patch tokens: row 0, columns 1:
-        # shape → [heads, num_patches]
-        cls_attn = attn[0, :, 0, 1:].cpu().numpy()   # [heads, N_patches]
+        attn     = self._attn_weights                    # [1, heads, N, N]
+        cls_attn = attn[0, :, 0, 1:].cpu().numpy()      # [heads, N_patches]
 
         H_patches = H_pad // p
         W_patches = W_pad // p
+        num_heads = cls_attn.shape[0]
 
-        # Average over heads, then reshape to spatial grid
-        attn_map = cls_attn.mean(axis=0)              # [N_patches]
-        attn_map = attn_map.reshape(H_patches, W_patches)
+        # --- Entropy-based head selection ---
+        eps       = 1e-8
+        entropies = -(cls_attn * np.log(cls_attn + eps)).sum(axis=1)  # [heads]
+
+        if top_k_heads is None:
+            top_k_heads = max(1, num_heads // 2)         # default: best 50%
+
+        selected  = np.argsort(entropies)[:top_k_heads]  # lowest-entropy heads
+        attn_map  = cls_attn[selected].mean(axis=0)      # [N_patches]
+        attn_map  = attn_map.reshape(H_patches, W_patches)
 
         # Normalize to [0, 1]
         attn_map = (attn_map - attn_map.min()) / (attn_map.max() - attn_map.min() + 1e-8)
 
         # Upsample back to original image size
         attn_tensor = torch.tensor(attn_map, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
-        attn_tensor = F.interpolate(attn_tensor, size=(H_orig, W_orig), mode='bilinear', align_corners=False)
+        attn_tensor = F.interpolate(attn_tensor, size=(H_orig, W_orig),
+                                    mode='bilinear', align_corners=False)
 
         return attn_tensor.squeeze().numpy()
 
@@ -213,47 +216,53 @@ class dino:
 
 
     # ------------------------------------------------
-    # Adaptive threshold via Otsu on the attention map
+    # Percentile threshold  (replaces Otsu)
     # ------------------------------------------------
-    def _otsu_threshold(self, attn_map):
-        """Compute Otsu threshold on a float [0,1] attention map."""
-        attn_uint8 = (attn_map * 255).astype(np.uint8)
-        thresh_val, _ = cv2.threshold(attn_uint8, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        return thresh_val / 255.0
-
-
-    def create_foreground_mask(self, attn_map, threshold=None):
+    def _percentile_threshold(self, attn_map, keep_fraction=0.35):
         """
-        threshold=None  → use Otsu (recommended)
-        threshold=float → use fixed value (legacy behaviour)
+        Return the value at the (1 - keep_fraction) percentile so that
+        roughly `keep_fraction` of patches are classified as foreground.
+
+        keep_fraction=0.35 means the top 35% of patches are kept.
+        Tune upward (0.4-0.5) for larger objects, downward (0.2-0.3) for small ones.
+        """
+        return float(np.percentile(attn_map, (1.0 - keep_fraction) * 100))
+
+    def create_foreground_mask(self, attn_map, threshold=None, keep_fraction=0.35):
+        """
+        threshold=None  -> use percentile threshold (recommended)
+        threshold=float -> use fixed value (legacy)
+
+        keep_fraction : fraction of patches to treat as foreground (default 35%).
+        Ignored when threshold is supplied explicitly.
         """
         if threshold is None:
-            threshold = self._otsu_threshold(attn_map)
+            threshold = self._percentile_threshold(attn_map, keep_fraction)
         return (attn_map > threshold).astype(np.uint8)
 
 
     # ------------------------------------------------
-    # Depth fusion  (less aggressive than before)
+    # Depth fusion
     # ------------------------------------------------
-    def fuse_depth(self, mask, depth_map, depth_weight=0.5, depth_percentile=70):
+    def fuse_depth(self, mask, depth_map, foreground_depth_fraction=0.45):
         """
-        Keep masked pixels whose depth is below the `depth_percentile`-th
-        percentile of depth values inside the initial mask.
-        Using a percentile instead of (median - 0.05) avoids the mask
-        collapsing when the object spans a wide depth range.
+        Keep masked pixels that fall within the closest
+        `foreground_depth_fraction` of the FULL image depth range.
+
+        Thresholding against the full image (not within the mask) is more
+        reliable when the initial attention mask bleeds into the background:
+        the object of interest is always a foreground object, occupying
+        the lowest depth values in the scene.
+        foreground_depth_fraction=0.45 keeps the closest 45% of the scene;
+        tune down toward 0.30 for tighter object crops.
         """
         depth_norm = (depth_map - depth_map.min()) / (depth_map.max() - depth_map.min() + 1e-8)
 
-        masked_depth = depth_norm[mask.astype(bool)]
-        if len(masked_depth) == 0:
-            return mask
-
-        depth_thresh = np.percentile(masked_depth, depth_percentile)
-        depth_mask = depth_norm <= depth_thresh
-
-        # Blend: require BOTH attention foreground AND depth constraint
-        fused = mask.astype(bool) & depth_mask
-        return fused
+        # DepthAnything outputs INVERSE depth: larger value = CLOSER to camera.
+        # So foreground pixels have HIGH depth values — keep the top percentile.
+        depth_thresh = np.percentile(depth_norm, (1.0 - foreground_depth_fraction) * 100)
+        depth_mask = depth_norm >= depth_thresh
+        return mask.astype(bool) & depth_mask
 
 
     def upsample_mask(self, mask, output_size):
@@ -293,52 +302,66 @@ class dino:
     # ========================================================
 
     def generate_object_mask(self, image_tensor, depth_map, output_size,
-                             use_depth=True, fixed_threshold=None):
+                             use_depth=True, fixed_threshold=None,
+                             keep_fraction=0.38, top_k_heads=None):
         """
         Parameters
         ----------
         image_tensor    : [1, 3, H, W] float tensor (ImageNet-normalized)
-        depth_map       : HxW numpy array (metric or relative depth)
+        depth_map       : HxW numpy array or None
         output_size     : (H_out, W_out) tuple for final mask resolution
-        use_depth       : set False to skip depth fusion (useful when depth
-                          map quality is poor)
-        fixed_threshold : float or None.  None → adaptive Otsu (recommended)
+        use_depth       : False by default — DINO attention alone generalises
+                          better than attention intersected with depth, because
+                          depth fusion can slice through an object that spans
+                          multiple depth planes (e.g. a tall bag on a table).
+                          Set True only when the scene has strong depth separation.
+        fixed_threshold : float or None. None -> percentile threshold
+        keep_fraction   : fraction of patches treated as foreground (default 0.50).
+                          0.50 = top half of attention patches kept.
+                          Lower (0.35) for tighter mask; higher (0.65) to fill gaps.
+        top_k_heads     : number of low-entropy heads to use. None -> auto (50%)
         """
 
-        # 1. TRUE CLS attention map
-        attn_map = self.get_attention_map(image_tensor)
+        # 1. TRUE CLS attention map (entropy-filtered heads)
+        attn_map = self.get_attention_map(image_tensor, top_k_heads=top_k_heads)
 
-        # 2. Adaptive foreground mask
-        mask = self.create_foreground_mask(attn_map, threshold=fixed_threshold)
+        # 2. Percentile foreground mask — keep top 50% of attended patches
+        mask = self.create_foreground_mask(attn_map, threshold=fixed_threshold,
+                                           keep_fraction=keep_fraction)
 
         if use_depth and depth_map is not None:
-            # Resize mask to match depth map
             mask_resized = cv2.resize(
                 mask.astype(np.uint8),
                 (depth_map.shape[1], depth_map.shape[0]),
                 interpolation=cv2.INTER_NEAREST
             ).astype(bool)
-
-            # 3. Depth fusion (gentler than before)
-            mask_fused = self.fuse_depth(mask_resized, depth_map, depth_weight=0.5)
+            mask_fused = self.fuse_depth(mask_resized, depth_map,
+                                         foreground_depth_fraction=0.65)
             mask = mask_fused.astype(np.uint8)
         else:
             mask = mask.astype(np.uint8)
 
-        # 4. Morphological cleanup
-        kernel = np.ones((7, 7), np.uint8)
-        mask = cv2.morphologyEx(mask * 255, cv2.MORPH_OPEN,  kernel)
-        mask = cv2.morphologyEx(mask,       cv2.MORPH_CLOSE, kernel)
+        # 3. Morphological cleanup — close first to fill holes inside the object,
+        #    then open to remove small isolated background blobs
+        kernel = np.ones((9, 9), np.uint8)
+        mask = cv2.morphologyEx(mask * 255, cv2.MORPH_CLOSE, kernel)
+        mask = cv2.morphologyEx(mask,       cv2.MORPH_OPEN,  kernel)
         mask = (mask > 127).astype(np.uint8)
 
-        # 5. Upsample to target resolution
+        # 4. Upsample to target resolution
         mask = self.upsample_mask(mask, output_size)
 
-        # 6. Keep largest connected component
+        # 5. Keep largest connected component — drops stray blobs
         mask = self.extract_largest_component(mask)
 
-        # 7. Final cleanup
+        # 6. Final smoothing
         mask = self.refine_mask(mask)
+
+        # 7. Auto-invert: if >55% of pixels are masked we selected the background
+        if mask.mean() > 0.55:
+            mask = (1 - mask).astype(np.uint8)
+            mask = self.extract_largest_component(mask)
+            mask = self.refine_mask(mask)
 
         return mask
 
@@ -372,14 +395,38 @@ class dino:
         plt.show()
 
 
-    def visualize_mask_overlay(self, image_path, mask):
+    def visualize_mask_overlay(self, image_path, mask, color=(255, 140, 0), alpha=0.55):
+        """
+        Highlight the masked object in `color` (default orange).
+        Background pixels are shown as a dimmed greyscale so the object pops.
+
+        Parameters
+        ----------
+        color : RGB tuple — Orange=(255,140,0), Green=(0,200,80), Red=(220,50,50)
+        alpha : blend strength of the color on the object (0=no tint, 1=solid color)
+        """
         img = cv2.imread(image_path)
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB).astype(np.float32)
         img = cv2.resize(img, (mask.shape[1], mask.shape[0]))
 
+        fg = mask.astype(bool)
+        bg = ~fg
+
+        result = img.copy()
+
+        # Foreground: blend original pixel with the highlight color
+        result[fg] = (
+            img[fg] * (1 - alpha) +
+            np.array(color, dtype=np.float32) * alpha
+        ).clip(0, 255)
+
+        # Background: blue-grey tint
+        grey = img[bg].mean(axis=1, keepdims=True)  # [N,1]
+        blue_tint = np.array([0.55, 0.65, 1.0], dtype=np.float32)   # R,G,B multipliers
+        result[bg] = (grey * blue_tint * 0.55).clip(0, 255)
+
         plt.figure(figsize=(6, 6))
-        plt.imshow(img)
-        plt.imshow(mask, cmap='jet', alpha=0.4)
+        plt.imshow(result.astype(np.uint8))
         plt.title("Mask Overlay")
         plt.axis('off')
         plt.show()
