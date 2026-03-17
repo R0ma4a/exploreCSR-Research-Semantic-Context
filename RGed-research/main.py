@@ -28,7 +28,7 @@ depth = converter.predict_depth(image_tensor)
 depth_norm = converter.process_depth(depth, original_width, original_height)
 
 # ------------------------------------------------
-# 🔥 NEW: Generate Object Mask (CAPTRA-ready)
+# NEW: Generate Object Mask (CAPTRA-ready)
 # ------------------------------------------------
 mask = segmenter.generate_object_mask(
     image_tensor,
