@@ -35,14 +35,16 @@ import dino  # type: ignore
 from captra_viz import show_mask_overlay  # type: ignore
 
 
-def preprocess_for_dino(rgb: np.ndarray) -> torch.Tensor:
+def preprocess_for_dino(rgb: np.ndarray, size: tuple[int, int] = (224, 224)) -> torch.Tensor:
     """
     Minimal preprocessing for DINO:
+    - Resize to the model's expected image size (e.g. 224x224)
     - Convert to float32 in [0,1]
     - Normalize with ImageNet-like mean/std
     - Convert to (1, 3, H, W) torch tensor
     """
-    img = rgb.astype(np.float32) / 255.0
+    rgb_resized = cv2.resize(rgb, size)
+    img = rgb_resized.astype(np.float32) / 255.0
     mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
     std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
     img = (img - mean[None, None, :]) / std[None, None, :]
@@ -81,7 +83,11 @@ def run_debug(image_path: str, k_clusters: int = 5, show_all: bool = True) -> No
     print(f"[DEBUG-DINO] Patch segmentation shape: {seg_small.shape} (H_p={H_p}, W_p={W_p})")
 
     print("[DEBUG-DINO] Upsampling segmentation to full image size...")
-    seg_full = segmenter.upsample_segmentation(seg_small, output_size=(H, W))
+    seg_full = cv2.resize(
+        seg_small.astype(np.uint8),
+        (W, H),
+        interpolation=cv2.INTER_NEAREST,
+    )
     print(f"[DEBUG-DINO] Upsampled segmentation shape: {seg_full.shape}")
 
     labels = np.unique(seg_full)

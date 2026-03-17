@@ -80,6 +80,26 @@ def load_rgb_for_captra(image_path: str) -> np.ndarray:
     return img_rgb
 
 
+def preprocess_for_dino(rgb: np.ndarray, size: Tuple[int, int] = (224, 224)) -> "torch.Tensor":
+    """
+    Preprocess an RGB image for the timm DINO model.
+
+    DINO expects inputs of a fixed image size (e.g. 224x224 for
+    vit_small_patch16_dinov3_qkvb), so we resize explicitly here
+    instead of reusing the DepthAnything tensor size.
+    """
+    import torch  # local import to avoid hard dependency at module import time
+
+    rgb_resized = cv2.resize(rgb, size)
+    img = rgb_resized.astype(np.float32) / 255.0
+    mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+    std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+    img = (img - mean[None, None, :]) / std[None, None, :]
+
+    tensor = torch.from_numpy(img).permute(2, 0, 1).unsqueeze(0)  # (1,3,H,W)
+    return tensor
+
+
 # ------------------------------------------------------------------------
 # Main pipeline
 # ------------------------------------------------------------------------
@@ -120,8 +140,8 @@ def run_pipeline(
     print("[INFO] Initializing DINO segmenter...")
     segmenter = dino.dino()
 
-    # 2) Preprocess image for DepthAnything (and DINO, following main.py)
-    print("[INFO] Converting image to tensor (DepthAnything/DINO input)...")
+    # 2) Preprocess image for DepthAnything
+    print("[INFO] Converting image to tensor for DepthAnything...")
     image_tensor, _, original_width, original_height = converter.image_to_tensor(image_path)
 
     # Load RGB separately for CAPTRA (full resolution, RGB)
@@ -139,7 +159,8 @@ def run_pipeline(
 
     # 4) DINOv3 feature extraction and segmentation (steps 1–4)
     print("[INFO] Extracting DINO features...")
-    features = segmenter.extract_features(image_tensor)
+    dino_tensor = preprocess_for_dino(rgb, size=(224, 224))
+    features = segmenter.extract_features(dino_tensor)
     patch_grid = segmenter.process_patch_tokens(features)
     patch_features_np, H_p, W_p = segmenter.prepare_features_for_clustering(patch_grid)
 
@@ -149,7 +170,11 @@ def run_pipeline(
 
     # 5) Upsample segmentation to image size for CAPTRA
     print("[INFO] Upsampling segmentation to full image size for CAPTRA...")
-    seg_full = segmenter.upsample_segmentation(seg_small, output_size=(original_height, original_width))
+    seg_full = cv2.resize(
+        seg_small.astype(np.uint8),
+        (original_width, original_height),
+        interpolation=cv2.INTER_NEAREST,
+    )
     print(f"[INFO] Upsampled segmentation shape: {seg_full.shape}")
 
     # 6) Initialize CAPTRA with camera intrinsics
