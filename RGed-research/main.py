@@ -7,7 +7,7 @@ import numpy as np
 # ------------------------------------------------
 # Use absolute paths so this script works regardless of the
 # current working directory when it is invoked.
-image_path = r"C:\Users\roman\Git Projects\BrownCSR\SimpleRecon\Work_dir\Input_IMGs\Related_IMGs_4\PXL_20260303_211335449.jpg"
+image_path = r"C:\Users\roman\Git Projects\BrownCSR\SimpleRecon\Work_dir\Input_IMGs\Related_IMGs_4\PXL_20260303_211335449.jpeg"
 weights = r"C:\Users\roman\Downloads\depth_anything_v2_vitb.pth"
 
 # -- Initialize Models --
