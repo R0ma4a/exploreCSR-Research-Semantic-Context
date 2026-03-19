@@ -280,6 +280,45 @@ class dino:
         largest_label = sizes.argmax()
         return (labels == largest_label).astype(np.uint8)
 
+    def extract_center_component(self, mask):
+        """
+        Return the connected component whose centroid is closest to the image
+        center, weighted by component size.
+
+        Better than extract_largest_component for scenes where:
+          - A thin object (lamppost, sign pole) connects to the ground through
+            its base, creating one large L-shaped blob that is technically the
+            biggest region but is mostly noise.
+          - Multiple blobs exist and the target object is not the largest.
+
+        Score = distance_from_center / sqrt(size)
+          -> large components tolerate being slightly off-center
+          -> small peripheral specks score worse than a large centered object
+        """
+        num_labels, labels = cv2.connectedComponents(mask)
+        if num_labels <= 1:
+            return mask
+
+        H, W = mask.shape
+        cy, cx = H / 2.0, W / 2.0
+
+        best_label = 1
+        best_score = float('inf')
+
+        for lbl in range(1, num_labels):
+            component = (labels == lbl)
+            size = int(component.sum())
+            if size < 50:           # skip tiny specks
+                continue
+            ys, xs = np.where(component)
+            dist = ((ys.mean() - cy) ** 2 + (xs.mean() - cx) ** 2) ** 0.5
+            score = dist / (size ** 0.5)
+            if score < best_score:
+                best_score = score
+                best_label = lbl
+
+        return (labels == best_label).astype(np.uint8)
+
 
     def refine_mask(self, mask):
         kernel = np.ones((5, 5), np.uint8)
@@ -351,8 +390,8 @@ class dino:
         # 4. Upsample to target resolution
         mask = self.upsample_mask(mask, output_size)
 
-        # 5. Keep largest connected component — drops stray blobs
-        mask = self.extract_largest_component(mask)
+        # 5. Keep the component closest to image center
+        mask = self.extract_center_component(mask)
 
         # 6. Final smoothing
         mask = self.refine_mask(mask)
@@ -360,8 +399,44 @@ class dino:
         # 7. Auto-invert: if >55% of pixels are masked we selected the background
         if mask.mean() > 0.55:
             mask = (1 - mask).astype(np.uint8)
-            mask = self.extract_largest_component(mask)
+            mask = self.extract_center_component(mask)
             mask = self.refine_mask(mask)
+
+        # 8. Center-crop attention fallback for small objects
+        # Triggered when pass 1 still covers >40% of the image.
+        # Depth doesn't help for signs in snow because the ground is CLOSER
+        # than the sign. Instead: crop center 40% of the attention map,
+        # find the locally strongest attended region there, and use that.
+        # The target object is always roughly centered, and is the most
+        # locally-attended thing in the center crop even when it loses globally
+        # to a brighter/larger background region like snow.
+        if mask.mean() > 0.40:
+            H_a, W_a = attn_map.shape
+            r0, r1 = int(H_a * 0.30), int(H_a * 0.70)
+            c0, c1 = int(W_a * 0.30), int(W_a * 0.70)
+
+            # Zero outside center crop so peak search is constrained
+            cropped_attn = np.zeros_like(attn_map)
+            cropped_attn[r0:r1, c0:c1] = attn_map[r0:r1, c0:c1]
+
+            # Keep top 20% of attention values inside the crop only
+            crop_vals = cropped_attn[r0:r1, c0:c1]
+            if crop_vals.max() > 0:
+                local_thresh = np.percentile(crop_vals[crop_vals > 0], 80)
+                center_mask = (cropped_attn >= local_thresh).astype(np.uint8)
+
+                k = np.ones((7, 7), np.uint8)
+                center_mask = cv2.morphologyEx(center_mask * 255, cv2.MORPH_CLOSE, k)
+                center_mask = cv2.morphologyEx(center_mask,       cv2.MORPH_OPEN,  k)
+                center_mask = (center_mask > 127).astype(np.uint8)
+
+                center_mask = self.upsample_mask(center_mask, output_size)
+                center_mask = self.extract_center_component(center_mask)
+                center_mask = self.refine_mask(center_mask)
+
+                # Accept only if compact and non-trivial
+                if 0.01 < center_mask.mean() < 0.35:
+                    mask = center_mask
 
         return mask
 

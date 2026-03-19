@@ -10,43 +10,33 @@ import numpy as np
 image_path = r"C:\Users\roman\Git Projects\BrownCSR\SimpleRecon\Work_dir\Input_IMGs\Related_IMGs_4\PXL_20260303_211335449.jpg"
 weights = r"C:\Users\roman\Downloads\depth_anything_v2_vitb.pth"
 
-# ------------------------------------------------
-# Initialize Models
-# ------------------------------------------------
+# -- Initialize Models --
 converter = depth_anything.DepthAnything(weights)
 segmenter = dino.dino()
 
-# ------------------------------------------------
-# Image Preprocessing
-# ------------------------------------------------
+# -- Preprocess Image --
 image_tensor, rgb_image, original_width, original_height = converter.image_to_tensor(image_path)
 
-# ------------------------------------------------
-# Depth Prediction
-# ------------------------------------------------
+# -- Generate Depth Map --
 depth = converter.predict_depth(image_tensor)
 depth_norm = converter.process_depth(depth, original_width, original_height)
 
-# ------------------------------------------------
-# NEW: Generate Object Mask (CAPTRA-ready)
-# ------------------------------------------------
+# -- Generate Object Mask --
 mask = segmenter.generate_object_mask(
     image_tensor,
     depth_norm,
     (original_height, original_width)
 )
 
-# Debug check
+# -- Debug check --
 print("Mask unique values:", np.unique(mask))
 
-# ------------------------------------------------
-# 🎯 Visualization
-# ------------------------------------------------
+# -- Visualizations --
 
-# 2. Overlay on image
+# Overlay mask on original image
 segmenter.visualize_mask_overlay(image_path, mask)
 
-# 3. Masked image (CAPTRA view)
+# Visualize masked image
 segmenter.visualize_masked_image(image_path, mask)
 
 
