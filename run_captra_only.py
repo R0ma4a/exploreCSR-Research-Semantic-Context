@@ -63,26 +63,6 @@ def load_rgb_for_captra(image_path: str) -> np.ndarray:
     return img_rgb
 
 
-def preprocess_for_dino(rgb: np.ndarray, size: Tuple[int, int] = (224, 224)) -> "torch.Tensor":
-    """
-    Preprocess an RGB image for the timm DINO model.
-
-    DINO expects inputs of a fixed image size (e.g. 224x224 for
-    vit_small_patch16_dinov3_qkvb), so we resize explicitly here
-    instead of reusing the DepthAnything tensor size.
-    """
-    import torch  # local import to avoid hard dependency at module import time
-
-    rgb_resized = cv2.resize(rgb, size)
-    img = rgb_resized.astype(np.float32) / 255.0
-    mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
-    std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
-    img = (img - mean[None, None, :]) / std[None, None, :]
-
-    tensor = torch.from_numpy(img).permute(2, 0, 1).unsqueeze(0)  # (1,3,H,W)
-    return tensor
-
-
 def run_captra_only(
     image_path: str,
     weights_path: str,
@@ -91,8 +71,6 @@ def run_captra_only(
     cx: Optional[float],
     cy: Optional[float],
     depth_scale: float = 1.0,
-    k_clusters: int = 5,
-    target_label: Optional[int] = None,
 ) -> None:
     """
     Run CAPTRA (with internal depth + segmentation) on a single RGB image
@@ -130,25 +108,14 @@ def run_captra_only(
     depth_norm = converter.process_depth(depth_raw, original_width, original_height)
     print(f"[CAPTRA-ONLY] Depth map shape (normalized): {depth_norm.shape}")
 
-    # 4) DINOv3 feature extraction and segmentation (steps 1–4)
-    print("[CAPTRA-ONLY] Extracting DINO features...")
-    dino_tensor = preprocess_for_dino(rgb, size=(224, 224))
-    features = segmenter.extract_features(dino_tensor)
-    patch_grid = segmenter.process_patch_tokens(features)
-    patch_features_np, H_p, W_p = segmenter.prepare_features_for_clustering(patch_grid)
-
-    print("[CAPTRA-ONLY] Clustering DINO patch features...")
-    seg_small = segmenter.cluster_features(patch_features_np, H_p, W_p, k=k_clusters)
-    print(f"[CAPTRA-ONLY] DINO patch segmentation shape: {seg_small.shape} (H_p={H_p}, W_p={W_p})")
-
-    # 5) Upsample segmentation to image size for CAPTRA
-    print("[CAPTRA-ONLY] Upsampling segmentation to full image size for CAPTRA...")
-    seg_full = cv2.resize(
-        seg_small.astype(np.uint8),
-        (W, H),
-        interpolation=cv2.INTER_NEAREST,
+    # 4) DINO-based CAPTRA-ready object mask (as in RGed-research/main.py)
+    print("[CAPTRA-ONLY] Generating CAPTRA-ready object mask with DINO...")
+    mask = segmenter.generate_object_mask(
+        image_tensor,
+        depth_norm,
+        (H, W),
     )
-    print(f"[CAPTRA-ONLY] Upsampled segmentation shape: {seg_full.shape}")
+    print(f"[CAPTRA-ONLY] Object mask shape: {mask.shape}, unique values: {np.unique(mask)}")
 
     # 6) Initialize CAPTRA with camera intrinsics
     if cx is None:
@@ -173,8 +140,8 @@ def run_captra_only(
     out = captra.forward(
         rgb=rgb,
         depth=depth_norm,
-        seg_or_mask=seg_full,
-        target_label=target_label,
+        seg_or_mask=mask,
+        target_label=None,
         previous_reference_state=None,
     )
 
@@ -198,11 +165,8 @@ def run_captra_only(
     centroid = out["object_centroid"]
     axes = out["principal_axes"]
 
-    # Use a simple object mask for overlay: either target_label or the auto-selected mask
-    if target_label is not None:
-        obj_mask = seg_full == target_label
-    else:
-        obj_mask = mask
+    # Use CAPTRA/DINO object mask directly
+    obj_mask = mask.astype(bool)
 
     print("[CAPTRA-ONLY] Showing mask overlay...")
     show_mask_overlay(rgb, obj_mask)
@@ -262,21 +226,6 @@ def parse_args() -> argparse.Namespace:
         help="Scale factor applied to depth values before CAPTRA. "
         "Since DepthAnything outputs normalized depth, 1.0 is usually fine.",
     )
-    parser.add_argument(
-        "--k",
-        type=int,
-        default=5,
-        help="Number of clusters for DINO KMeans segmentation.",
-    )
-    parser.add_argument(
-        "--target-label",
-        type=int,
-        default=None,
-        help=(
-            "Which segmentation label to treat as the target object. "
-            "If omitted, CAPTRA will auto-select the most frequent non-zero label."
-        ),
-    )
     return parser.parse_args()
 
 
@@ -290,8 +239,6 @@ def main() -> None:
         cx=args.cx,
         cy=args.cy,
         depth_scale=args.depth_scale,
-        k_clusters=args.k,
-        target_label=args.target_label,
     )
 
 

@@ -31,26 +31,9 @@ def _add_rged_to_path() -> None:
 
 _add_rged_to_path()
 
+import depth_anything  # type: ignore
 import dino  # type: ignore
 from captra_viz import show_mask_overlay  # type: ignore
-
-
-def preprocess_for_dino(rgb: np.ndarray, size: tuple[int, int] = (224, 224)) -> torch.Tensor:
-    """
-    Minimal preprocessing for DINO:
-    - Resize to the model's expected image size (e.g. 224x224)
-    - Convert to float32 in [0,1]
-    - Normalize with ImageNet-like mean/std
-    - Convert to (1, 3, H, W) torch tensor
-    """
-    rgb_resized = cv2.resize(rgb, size)
-    img = rgb_resized.astype(np.float32) / 255.0
-    mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
-    std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
-    img = (img - mean[None, None, :]) / std[None, None, :]
-
-    tensor = torch.from_numpy(img).permute(2, 0, 1).unsqueeze(0)  # (1,3,H,W)
-    return tensor
 
 
 def load_rgb(image_path: str) -> np.ndarray:
@@ -61,47 +44,53 @@ def load_rgb(image_path: str) -> np.ndarray:
     return img_rgb
 
 
-def run_debug(image_path: str, k_clusters: int = 5, show_all: bool = True) -> None:
+def run_debug(image_path: str, show_all: bool = True) -> None:
     print(f"[DEBUG-DINO] Using image: {image_path}")
     rgb = load_rgb(image_path)
     H, W, _ = rgb.shape
     print(f"[DEBUG-DINO] RGB shape: {rgb.shape}")
 
-    print("[DEBUG-DINO] Initializing DINO model...")
+    print("[DEBUG-DINO] Initializing DepthAnything...")
+    # For debugging we don't expose weights via CLI; reuse the same default
+    # as other scripts if needed by editing this path.
+    # Alternatively, you can adapt this script to accept --weights.
+    # Here we assume the checkpoint path is known to the user.
+    # NOTE: To keep this script simple, you can temporarily hard-code your
+    # own checkpoint path here if needed.
+    raise_path_msg = (
+        "debug_dino_segmentation.py currently expects you to edit the "
+        "DepthAnything checkpoint path in the script if you want to use "
+        "the CAPTRA-ready mask. Alternatively, run main.py for a full "
+        "example. "
+    )
+    # The actual path should match RGed-research/main.py
+    weights_path = r"C:\Users\roman\Downloads\depth_anything_v2_vitb.pth"
+    converter = depth_anything.DepthAnything(weights_path)
+
+    print("[DEBUG-DINO] Initializing DINO segmenter...")
     segmenter = dino.dino()
 
-    print("[DEBUG-DINO] Preprocessing image for DINO...")
-    img_tensor = preprocess_for_dino(rgb)
+    print("[DEBUG-DINO] Preprocessing image for DepthAnything...")
+    image_tensor, _, original_width, original_height = converter.image_to_tensor(image_path)
 
-    print("[DEBUG-DINO] Extracting DINO features...")
-    feats = segmenter.extract_features(img_tensor)
-    patch_grid = segmenter.process_patch_tokens(feats)
-    patch_features_np, H_p, W_p = segmenter.prepare_features_for_clustering(patch_grid)
+    print("[DEBUG-DINO] Predicting depth with DepthAnything...")
+    depth_raw = converter.predict_depth(image_tensor)
+    depth_norm = converter.process_depth(depth_raw, original_width, original_height)
 
-    print("[DEBUG-DINO] Clustering patch features...")
-    seg_small = segmenter.cluster_features(patch_features_np, H_p, W_p, k=k_clusters)
-    print(f"[DEBUG-DINO] Patch segmentation shape: {seg_small.shape} (H_p={H_p}, W_p={W_p})")
-
-    print("[DEBUG-DINO] Upsampling segmentation to full image size...")
-    seg_full = cv2.resize(
-        seg_small.astype(np.uint8),
-        (W, H),
-        interpolation=cv2.INTER_NEAREST,
+    print("[DEBUG-DINO] Generating CAPTRA-ready object mask with DINO...")
+    mask = segmenter.generate_object_mask(
+        image_tensor,
+        depth_norm,
+        (original_height, original_width),
     )
-    print(f"[DEBUG-DINO] Upsampled segmentation shape: {seg_full.shape}")
-
-    labels = np.unique(seg_full)
-    print(f"[DEBUG-DINO] Unique labels in segmentation: {labels}")
+    print(f"[DEBUG-DINO] Mask shape: {mask.shape}, unique values: {np.unique(mask)}")
 
     if not show_all:
         print("[DEBUG-DINO] show_all=False; not launching matplotlib windows.")
         return
 
-    # Visualize each label separately to understand which one matches the object.
-    for lbl in labels:
-        mask = seg_full == lbl
-        print(f"[DEBUG-DINO] Label {lbl}: pixels={mask.sum()}")
-        show_mask_overlay(rgb, mask, alpha=0.5)
+    # Visualize the CAPTRA-ready mask overlay.
+    show_mask_overlay(rgb, mask.astype(bool), alpha=0.5)
 
 
 def parse_args() -> argparse.Namespace:
@@ -109,12 +98,6 @@ def parse_args() -> argparse.Namespace:
         description="Debug DINO segmentation labels and object masks on a single image."
     )
     parser.add_argument("--image", type=str, required=True, help="Path to RGB image.")
-    parser.add_argument(
-        "--k",
-        type=int,
-        default=5,
-        help="Number of clusters for DINO KMeans segmentation (same as run_full_pipeline.py --k).",
-    )
     parser.add_argument(
         "--no-show",
         action="store_true",
@@ -127,7 +110,6 @@ def main() -> None:
     args = parse_args()
     run_debug(
         image_path=args.image,
-        k_clusters=args.k,
         show_all=not args.no_show,
     )
 
