@@ -8,6 +8,12 @@ from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 import torch.nn.functional as F
 
+try:
+    import clip
+    _CLIP_AVAILABLE = True
+except ImportError:
+    _CLIP_AVAILABLE = False
+
 
 class dino:
 
@@ -437,6 +443,238 @@ class dino:
                 # Accept only if compact and non-trivial
                 if 0.01 < center_mask.mean() < 0.35:
                     mask = center_mask
+
+        return mask
+
+
+    # ========================================================
+    # PROMPT-GUIDED SEGMENTATION  (DINO features + CLIP text)
+    # ========================================================
+
+    # ========================================================
+    # PROMPT PARSER  — extracts visual priors from text
+    # ========================================================
+
+    def _parse_prompt_priors(self, prompt):
+        """
+        Extract visual priors from a natural-language prompt without any
+        external model.  Returns a dict of floats used to weight the cluster
+        scoring in segment_from_prompt.
+
+        Keys
+        ----
+        center_weight   : how strongly to prefer image-centre clusters (0-1)
+        compact_weight  : how strongly to prefer spatially compact clusters (0-1)
+        size_fraction   : rough expected fraction of image area (0.05 - 0.60)
+        attn_weight     : how strongly to use raw DINO attention score (0-1)
+        """
+        p = prompt.lower()
+
+        # ---- compactness prior ----------------------------------------
+        # Objects that are typically tight / self-contained
+        compact_objects = {
+            'bag', 'backpack', 'suitcase', 'purse', 'handbag',
+            'bottle', 'cup', 'mug', 'glass', 'can', 'bowl',
+            'chair', 'stool',
+            'laptop', 'phone', 'keyboard', 'monitor', 'screen',
+            'book', 'box', 'carton',
+            'dog', 'cat', 'bird', 'animal',
+            'person', 'human', 'face', 'head',
+            'ball', 'toy',
+            'plant', 'pot', 'vase',
+            'shoe', 'boot',
+        }
+        # Objects that tend to spread across large image regions
+        spread_objects = {
+            'table', 'desk', 'floor', 'ground', 'ceiling',
+            'wall', 'shelf', 'rack', 'road', 'sky', 'grass',
+            'sofa', 'couch', 'bed', 'carpet', 'rug',
+        }
+
+        compact_weight = 0.5   # neutral default
+        for w in compact_objects:
+            if w in p:
+                compact_weight = 0.85
+                break
+        for w in spread_objects:
+            if w in p:
+                compact_weight = 0.20
+                break
+
+        # ---- size prior -----------------------------------------------
+        size_fraction = 0.30   # default: object covers ~30% of image
+        if any(w in p for w in ('small', 'tiny', 'little', 'mini')):
+            size_fraction = 0.12
+        elif any(w in p for w in ('large', 'big', 'huge', 'giant')):
+            size_fraction = 0.55
+        # Known small objects
+        if any(w in p for w in ('cup', 'mug', 'glass', 'bottle', 'phone', 'book')):
+            size_fraction = min(size_fraction, 0.20)
+        # Known large objects
+        if any(w in p for w in ('sofa', 'couch', 'bed', 'table', 'desk')):
+            size_fraction = max(size_fraction, 0.45)
+
+        # ---- spatial position prior -----------------------------------
+        center_weight = 0.65   # default: objects tend to be centred
+        if any(w in p for w in ('left',)):
+            center_weight = 0.30   # de-emphasise centre, let attention lead
+        if any(w in p for w in ('right',)):
+            center_weight = 0.30
+        if any(w in p for w in ('top', 'above', 'upper')):
+            center_weight = 0.30
+        if any(w in p for w in ('bottom', 'below', 'lower', 'ground', 'floor')):
+            center_weight = 0.20
+        if any(w in p for w in ('center', 'centre', 'middle')):
+            center_weight = 0.90
+
+        # ---- attention weight -----------------------------------------
+        # For well-defined objects DINO attention is very reliable
+        attn_weight = 0.70
+
+        return dict(
+            center_weight  = center_weight,
+            compact_weight = compact_weight,
+            size_fraction  = size_fraction,
+            attn_weight    = attn_weight,
+        )
+
+
+    # ========================================================
+    # PROMPT-GUIDED SEGMENTATION  — DINO-only, no CLIP
+    # ========================================================
+
+    def segment_from_prompt(
+        self,
+        image_tensor,
+        prompt="",
+        output_size=None,
+        keep_fraction=0.30,
+        top_k_heads=None,
+        use_edge_refine=True,
+        use_bilateral=True,
+        use_image_edges=True
+    ):
+        """
+        SAM-like segmentation using:
+        - DINO attention (semantic mask)
+        - Edge-aware refinement (sharp boundaries)
+        - Optional smoothing
+
+        Toggles
+        -------
+        use_edge_refine : use edge sharpening (biggest improvement)
+        use_bilateral   : smooth noise while keeping edges
+        use_image_edges : use real image edges instead of mask edges
+        """
+
+        import numpy as np
+        import cv2
+        import torch
+        import torch.nn.functional as F
+
+        eps = 1e-8
+        _, _, H_orig, W_orig = image_tensor.shape
+
+        if output_size is None:
+            output_size = (H_orig, W_orig)
+
+        # ------------------------------------------------
+        # 1. DINO attention (semantic signal)
+        # ------------------------------------------------
+        attn_map = self.get_attention_map(image_tensor, top_k_heads=top_k_heads)
+
+        # ------------------------------------------------
+        # 2. Prompt spatial bias (light influence)
+        # ------------------------------------------------
+        priors = self._parse_prompt_priors(prompt)
+
+        H, W = attn_map.shape
+        ys, xs = np.indices((H, W))
+
+        cy, cx = H / 2.0, W / 2.0
+        center_dist = np.sqrt((ys - cy)**2 + (xs - cx)**2)
+        center_dist = center_dist / (center_dist.max() + eps)
+
+        center_bias = 1.0 - center_dist
+
+        spatial_bias = (
+            priors['center_weight'] * center_bias +
+            (1 - priors['center_weight']) * 1.0
+        )
+
+        guidance = attn_map * spatial_bias
+
+        # Normalize
+        guidance = (guidance - guidance.min()) / (guidance.max() - guidance.min() + eps)
+
+        # ------------------------------------------------
+        # 3. EDGE REFINEMENT (SAM-like sharpness)
+        # ------------------------------------------------
+        if use_edge_refine:
+
+            if use_image_edges:
+                # Use actual image edges (BEST)
+                img = image_tensor.squeeze().permute(1, 2, 0).cpu().numpy()
+                img = (img - img.min()) / (img.max() - img.min() + eps)
+                img_gray = cv2.cvtColor((img * 255).astype(np.uint8), cv2.COLOR_RGB2GRAY)
+
+                edges = cv2.Canny(img_gray, 100, 200)
+            else:
+                # fallback: edges from mask
+                edges = cv2.Canny((guidance * 255).astype(np.uint8), 50, 150)
+
+            edges = edges.astype(np.float32) / 255.0
+
+            # 🔥 edge sharpening
+            guidance = guidance * (1 + 0.8 * edges)
+            guidance = np.clip(guidance, 0, 1)
+
+        # ------------------------------------------------
+        # 4. Smooth while preserving edges
+        # ------------------------------------------------
+        if use_bilateral:
+            guidance = cv2.bilateralFilter(guidance.astype(np.float32), 9, 75, 75)
+
+        # Light blur to remove patch artifacts
+        guidance = cv2.GaussianBlur(guidance, (5, 5), 0)
+
+        # ------------------------------------------------
+        # 5. Threshold → binary
+        # ------------------------------------------------
+        threshold = np.percentile(guidance, (1.0 - keep_fraction) * 100)
+
+        # ------------------------------------------------
+        # 6. HIGH-QUALITY UPSAMPLING (critical)
+        # ------------------------------------------------
+        guidance_tensor = torch.tensor(guidance).unsqueeze(0).unsqueeze(0).float()
+
+        upsampled = F.interpolate(
+            guidance_tensor,
+            size=output_size,
+            mode='bilinear',
+            align_corners=False
+        ).squeeze().cpu().numpy()
+
+        mask = (upsampled > threshold).astype(np.uint8)
+
+        # ------------------------------------------------
+        # 7. Final cleanup
+        # ------------------------------------------------
+        kernel = np.ones((5, 5), np.uint8)
+
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+
+        mask = cv2.GaussianBlur(mask.astype(float), (7, 7), 0)
+        mask = (mask > 0.4).astype(np.uint8)
+
+        # Keep main object
+        mask = self.extract_center_component(mask)
+
+        # Auto-invert safeguard
+        if mask.mean() > 0.55:
+            mask = (1 - mask).astype(np.uint8)
+            mask = self.extract_center_component(mask)
 
         return mask
 
