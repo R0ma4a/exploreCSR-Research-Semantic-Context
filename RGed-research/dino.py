@@ -548,7 +548,7 @@ class dino:
         image_tensor,
         prompt="",
         output_size=None,
-        keep_fraction=0.30,
+        keep_fraction=0.25,
         top_k_heads=None,
         use_edge_refine=True,
         use_bilateral=True,

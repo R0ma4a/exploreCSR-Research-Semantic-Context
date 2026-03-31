@@ -9,10 +9,10 @@ import numpy as np
 # current working directory when it is invoked.
  
  
-image_path = r"D:\Research Projects\exploreCSR-Research-Semantic-Context\RGed-research\imgs\obj00001\img00001.jpeg"
+image_path = r"D:\Research Projects\exploreCSR-Research-Semantic-Context\RGed-research\imgs\obj00004\img00001.jpeg"
 rae_weights_path = r"D:\Research Projects\exploreCSR-Research-Semantic-Context\RGed-research\checkpoints\depth_anything_v2_vitb.pth"
 roman_weights_path = r"C:\Users\roman\Downloads\depth_anything_v2_vitb.pth"
-prompt = "bag"  # Example prompt for object segmentation
+prompt = "salt and pepper shaker"  # Example prompt for object segmentation
  
 # -- Initialize Models --
 converter = depth_anything.DepthAnything(rae_weights_path)
