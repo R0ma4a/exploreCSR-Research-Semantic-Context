@@ -2,8 +2,9 @@
 """
 Run CAPTRA over multiple RGB images in sequence (temporal pipeline).
 
-Like run_captra_only.py, each frame uses DepthAnything + DINO generate_object_mask,
-then CAPTRA.forward. The key difference: after the first frame, CAPTRA receives
+Like run_captra_only.py / main.py, each frame uses DepthAnything for depth and
+DINO segment_from_prompt for prompt-guided masking, then CAPTRA.forward. After
+the first frame, CAPTRA receives
 `previous_reference_state` from the previous frame so pose outputs reflect *change*
 (translation, rotation, scale) for the graph x-axis, not merely identity on every image.
 
@@ -14,10 +15,12 @@ Usage
 -----
 python captra_multiple_images.py \\
     --images path/to/a.jpg path/to/b.jpg path/to/c.jpg \\
-    --weights "C:\\Users\\you\\Downloads\\depth_anything_v2_vitb.pth"
+    --weights "C:\\Users\\you\\Downloads\\depth_anything_v2_vitb.pth" \\
+    --prompt "bag"
 
 python captra_multiple_images.py \\
     --images img1.jpg img2.jpg \\
+    --prompt "person" \\
     --no-viz
 """
 
@@ -54,6 +57,33 @@ from captra_viz import (  # type: ignore
 )
 
 
+def apply_scale_relative_to_anchor(
+    output_dict: dict,
+    anchor_extent_mean: Optional[float],
+) -> tuple[dict, Optional[float]]:
+    """
+    Re-express CAPTRA scale relative to the first valid reference frame.
+    """
+    ref = output_dict.get("reference_state")
+    if ref is not None and anchor_extent_mean is None:
+        anchor_extent_mean = float(np.mean(ref.extents))
+
+    if ref is None or anchor_extent_mean is None:
+        return output_dict, anchor_extent_mean
+
+    curr_extent_mean = float(np.mean(ref.extents))
+    denom = max(anchor_extent_mean, 1e-8)
+    scale_anchor = curr_extent_mean / denom
+
+    output_dict["scale"] = scale_anchor
+    pose_vector = output_dict.get("pose_vector")
+    if pose_vector is not None and len(pose_vector) >= 7:
+        pose_vector = np.asarray(pose_vector).copy()
+        pose_vector[6] = scale_anchor
+        output_dict["pose_vector"] = pose_vector
+    return output_dict, anchor_extent_mean
+
+
 def load_rgb_for_captra(image_path: str) -> np.ndarray:
     img_bgr = cv2.imread(image_path, cv2.IMREAD_COLOR)
     if img_bgr is None:
@@ -81,6 +111,7 @@ def resolve_image_paths(images: Optional[List[str]], pattern: Optional[str]) -> 
 def process_sequence(
     image_paths: List[str],
     weights_path: str,
+    prompt: str,
     fx: float,
     fy: float,
     cx: Optional[float],
@@ -101,6 +132,7 @@ def process_sequence(
 
     print(f"[CAPTRA-MULTI] {len(image_paths)} frame(s)")
     print(f"[CAPTRA-MULTI] DepthAnything checkpoint: {weights_path}")
+    print(f"[CAPTRA-MULTI] Prompt (segment_from_prompt): {prompt!r}")
 
     converter = depth_anything.DepthAnything(weights_path)
     segmenter = dino.dino()
@@ -108,6 +140,7 @@ def process_sequence(
     # Intrinsics: use first image size as reference defaults (each frame may differ)
     prev_state: Optional[CAPTRAReferenceState] = None
     captra: Optional[CAPTRA] = None
+    anchor_extent_mean: Optional[float] = None
 
     for idx, image_path in enumerate(image_paths):
         print(f"\n{'='*60}\n=== Frame {idx}: {image_path}\n{'='*60}")
@@ -142,10 +175,10 @@ def process_sequence(
             depth_raw, original_width, original_height
         )
 
-        mask = segmenter.generate_object_mask(
+        mask = segmenter.segment_from_prompt(
             image_tensor,
-            depth_norm,
-            (H, W),
+            prompt,
+            output_size=(original_height, original_width),
         )
 
         assert captra is not None
@@ -156,6 +189,7 @@ def process_sequence(
             target_label=None,
             previous_reference_state=prev_state,
         )
+        out, anchor_extent_mean = apply_scale_relative_to_anchor(out, anchor_extent_mean)
 
         print("\n=== CAPTRA Pose Summary ===")
         print_pose_summary(out)
@@ -222,6 +256,15 @@ def parse_args() -> argparse.Namespace:
         default=r"C:\Users\roman\Downloads\depth_anything_v2_vitb.pth",
         help="Path to DepthAnything .pth checkpoint.",
     )
+    parser.add_argument(
+        "--prompt",
+        type=str,
+        required=True,
+        help=(
+            "Text prompt for dino.segment_from_prompt (same as RGed-research/main.py), "
+            'e.g. "bag", "person".'
+        ),
+    )
     parser.add_argument("--fx", type=float, default=500.0)
     parser.add_argument("--fy", type=float, default=500.0)
     parser.add_argument("--cx", type=float, default=None)
@@ -246,6 +289,7 @@ def main() -> None:
     process_sequence(
         image_paths=paths,
         weights_path=args.weights,
+        prompt=args.prompt,
         fx=args.fx,
         fy=args.fy,
         cx=args.cx,

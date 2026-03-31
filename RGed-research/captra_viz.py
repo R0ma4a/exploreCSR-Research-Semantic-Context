@@ -74,9 +74,12 @@ def show_pointcloud(
     title: Optional[str] = None,
     s: int = 2,
     max_points: int = 50000,
+    cmap: str = "viridis",
 ) -> None:
     """
-    Simple 3D scatter plot of a point cloud.
+    3D scatter plot of a point cloud with points colored by camera-frame depth Z.
+
+    Color encodes ``points[:, 2]`` (same convention as CAPTRA back-projection).
 
     Parameters
     ----------
@@ -86,6 +89,8 @@ def show_pointcloud(
         Optional plot title.
     s:
         Marker size.
+    cmap:
+        Colormap for depth (Z) values.
     """
     if points.size == 0:
         print("show_pointcloud: no points to display.")
@@ -96,16 +101,28 @@ def show_pointcloud(
         idx = np.random.choice(points.shape[0], max_points, replace=False)
         points = points[idx]
 
+    z_depth = points[:, 2].astype(np.float64)
+
     from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
     fig = plt.figure()
     ax = fig.add_subplot(111, projection="3d")
-    ax.scatter(points[:, 0], points[:, 1], points[:, 2], s=s)
+    sc = ax.scatter(
+        points[:, 0],
+        points[:, 1],
+        points[:, 2],
+        s=s,
+        c=z_depth,
+        cmap=cmap,
+        depthshade=False,
+    )
     ax.set_xlabel("X")
     ax.set_ylabel("Y")
     ax.set_zlabel("Z")
     if title:
         ax.set_title(title)
+    cbar = fig.colorbar(sc, ax=ax, shrink=0.6, pad=0.08)
+    cbar.set_label("Depth Z (camera frame)")
     plt.show()
 
 
@@ -116,9 +133,13 @@ def show_reference_frame(
     axis_length: float = 0.1,
     title: Optional[str] = None,
     max_points: int = 50000,
+    cmap: str = "viridis",
 ) -> None:
     """
     Plot a point cloud with an overlaid reference frame (centroid + axes).
+
+    Points are colored by ``points[:, 2]`` (camera-frame depth Z), matching
+    the masked-depth intuition in the image plane.
 
     Parameters
     ----------
@@ -135,6 +156,8 @@ def show_reference_frame(
     max_points:
         Maximum number of points to draw; cloud is subsampled if larger
         to avoid hanging/crashing on huge point clouds.
+    cmap:
+        Colormap for depth (Z) values.
     """
     if points.size == 0:
         print("show_reference_frame: no points to display.")
@@ -145,11 +168,22 @@ def show_reference_frame(
         idx = np.random.choice(points.shape[0], max_points, replace=False)
         points = points[idx]
 
+    z_depth = points[:, 2].astype(np.float64)
+
     from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
     fig = plt.figure()
     ax = fig.add_subplot(111, projection="3d")
-    ax.scatter(points[:, 0], points[:, 1], points[:, 2], s=2, alpha=0.3)
+    sc = ax.scatter(
+        points[:, 0],
+        points[:, 1],
+        points[:, 2],
+        s=2,
+        alpha=0.45,
+        c=z_depth,
+        cmap=cmap,
+        depthshade=False,
+    )
 
     c = centroid.reshape(3)
     A = axes
@@ -174,6 +208,8 @@ def show_reference_frame(
     ax.set_zlabel("Z")
     if title:
         ax.set_title(title)
+    cbar = fig.colorbar(sc, ax=ax, shrink=0.6, pad=0.08)
+    cbar.set_label("Depth Z (camera frame)")
     plt.legend()
     plt.show()
 

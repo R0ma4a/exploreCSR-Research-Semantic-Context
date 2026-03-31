@@ -61,6 +61,33 @@ from captra_viz import (  # type: ignore
 )
 
 
+def apply_scale_relative_to_anchor(
+    output_dict: dict,
+    anchor_extent_mean: Optional[float],
+) -> tuple[dict, Optional[float]]:
+    """
+    Re-express CAPTRA scale relative to the first valid reference frame.
+    """
+    ref = output_dict.get("reference_state")
+    if ref is not None and anchor_extent_mean is None:
+        anchor_extent_mean = float(np.mean(ref.extents))
+
+    if ref is None or anchor_extent_mean is None:
+        return output_dict, anchor_extent_mean
+
+    curr_extent_mean = float(np.mean(ref.extents))
+    denom = max(anchor_extent_mean, 1e-8)
+    scale_anchor = curr_extent_mean / denom
+
+    output_dict["scale"] = scale_anchor
+    pose_vector = output_dict.get("pose_vector")
+    if pose_vector is not None and len(pose_vector) >= 7:
+        pose_vector = np.asarray(pose_vector).copy()
+        pose_vector[6] = scale_anchor
+        output_dict["pose_vector"] = pose_vector
+    return output_dict, anchor_extent_mean
+
+
 # ------------------------------------------------------------------------
 # Utilities
 # ------------------------------------------------------------------------
@@ -171,6 +198,7 @@ def run_pipeline(
         target_label=None,
         previous_reference_state=None,
     )
+    out, _ = apply_scale_relative_to_anchor(out, anchor_extent_mean=None)
 
     # 8) Summarize outputs
     print("\n=== DINO / CAPTRA Pipeline Output ===")
@@ -286,8 +314,6 @@ def main() -> None:
         cx=args.cx,
         cy=args.cy,
         depth_scale=args.depth_scale,
-        k_clusters=args.k,
-        target_label=args.target_label,
         show=args.show,
     )
 

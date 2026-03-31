@@ -2,15 +2,13 @@
 """
 Run CAPTRA on a single RGB image and visualize the result.
 
-This script is a streamlined variant of run_full_pipeline.py that:
-  - Takes an input JPG/JPEG (or other RGB image)
-  - Internally uses DepthAnything to predict depth
-  - Internally uses DINO to obtain a segmentation map
-  - Runs CAPTRA on the RGB + depth + mask
-  - Shows CAPTRA visualizations (mask overlay, depth, point cloud, reference frame)
+This script mirrors RGed-research/main.py’s flow:
+  - DepthAnything: depth from the same image tensor
+  - DINO: prompt-guided mask via segment_from_prompt(...)
+  - CAPTRA: RGB + depth + mask → pose / reference frame
 
-The emphasis is on exercising and visualizing CAPTRA, not on printing
-all intermediate details.
+The emphasis is on exercising and visualizing CAPTRA with the same
+masking pipeline as main.py.
 """
 
 import argparse
@@ -49,6 +47,33 @@ from captra_viz import (  # type: ignore
 )
 
 
+def apply_scale_relative_to_anchor(
+    output_dict: dict,
+    anchor_extent_mean: Optional[float],
+) -> tuple[dict, Optional[float]]:
+    """
+    Re-express CAPTRA scale relative to the first valid reference frame.
+    """
+    ref = output_dict.get("reference_state")
+    if ref is not None and anchor_extent_mean is None:
+        anchor_extent_mean = float(np.mean(ref.extents))
+
+    if ref is None or anchor_extent_mean is None:
+        return output_dict, anchor_extent_mean
+
+    curr_extent_mean = float(np.mean(ref.extents))
+    denom = max(anchor_extent_mean, 1e-8)
+    scale_anchor = curr_extent_mean / denom
+
+    output_dict["scale"] = scale_anchor
+    pose_vector = output_dict.get("pose_vector")
+    if pose_vector is not None and len(pose_vector) >= 7:
+        pose_vector = np.asarray(pose_vector).copy()
+        pose_vector[6] = scale_anchor
+        output_dict["pose_vector"] = pose_vector
+    return output_dict, anchor_extent_mean
+
+
 def load_rgb_for_captra(image_path: str) -> np.ndarray:
     """
     Load an RGB image for CAPTRA (HxWx3, uint8, RGB).
@@ -66,6 +91,7 @@ def load_rgb_for_captra(image_path: str) -> np.ndarray:
 def run_captra_only(
     image_path: str,
     weights_path: str,
+    prompt: str,
     fx: float,
     fy: float,
     cx: Optional[float],
@@ -73,8 +99,8 @@ def run_captra_only(
     depth_scale: float = 1.0,
 ) -> None:
     """
-    Run CAPTRA (with internal depth + segmentation) on a single RGB image
-    and show visualizations.
+    Run CAPTRA (with internal depth + prompt-based DINO mask) on a single
+    RGB image and show visualizations.
     """
     if not os.path.isfile(image_path):
         raise FileNotFoundError(f"Image file not found: {image_path}")
@@ -83,6 +109,7 @@ def run_captra_only(
 
     print(f"[CAPTRA-ONLY] Using image: {image_path}")
     print(f"[CAPTRA-ONLY] Using DepthAnything checkpoint: {weights_path}")
+    print(f"[CAPTRA-ONLY] Prompt: {prompt!r}")
 
     # 1) Initialize DepthAnything and DINO
     print("[CAPTRA-ONLY] Initializing DepthAnything...")
@@ -108,12 +135,12 @@ def run_captra_only(
     depth_norm = converter.process_depth(depth_raw, original_width, original_height)
     print(f"[CAPTRA-ONLY] Depth map shape (normalized): {depth_norm.shape}")
 
-    # 4) DINO-based CAPTRA-ready object mask (as in RGed-research/main.py)
-    print("[CAPTRA-ONLY] Generating CAPTRA-ready object mask with DINO...")
-    mask = segmenter.generate_object_mask(
+    # 4) Prompt-based object mask (same API as RGed-research/main.py)
+    print("[CAPTRA-ONLY] Generating object mask with DINO segment_from_prompt...")
+    mask = segmenter.segment_from_prompt(
         image_tensor,
-        depth_norm,
-        (H, W),
+        prompt,
+        output_size=(original_height, original_width),
     )
     print(f"[CAPTRA-ONLY] Object mask shape: {mask.shape}, unique values: {np.unique(mask)}")
 
@@ -144,6 +171,7 @@ def run_captra_only(
         target_label=None,
         previous_reference_state=None,
     )
+    out, _ = apply_scale_relative_to_anchor(out, anchor_extent_mean=None)
 
     # 8) Print a concise pose summary and diagnostics
     print("\n=== CAPTRA-ONLY Pose Output ===")
@@ -201,9 +229,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--weights",
         type=str,
-        default=r"D:\Research Projects\exploreCSR-Research-Semantic-Context\RGed-research\checkpoints\depth_anything_v2_vitb.pth",  # noqa: E501
-        help="Path to DepthAnything checkpoint (.pth). "
-        "Defaults to the path used in RGed-research/main.py.",
+        default=r"C:\Users\roman\Downloads\depth_anything_v2_vitb.pth",
+        help="Path to DepthAnything checkpoint (.pth).",
+    )
+    parser.add_argument(
+        "--prompt",
+        type=str,
+        required=True,
+        help=(
+            "Text prompt for prompt-guided masking (dino.segment_from_prompt), "
+            "e.g. \"bag\", \"red car\". Same role as `prompt` in RGed-research/main.py."
+        ),
     )
     parser.add_argument("--fx", type=float, default=500.0, help="Camera focal length fx.")
     parser.add_argument("--fy", type=float, default=500.0, help="Camera focal length fy.")
@@ -234,6 +270,7 @@ def main() -> None:
     run_captra_only(
         image_path=args.image,
         weights_path=args.weights,
+        prompt=args.prompt,
         fx=args.fx,
         fy=args.fy,
         cx=args.cx,
