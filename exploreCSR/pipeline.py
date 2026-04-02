@@ -7,7 +7,6 @@ Provides ``run_single``, ``run_sequence``, and ``run_video`` which chain:
 Each function returns structured output dicts. The scripts in browncsr/scripts/
 are thin CLI wrappers around these functions.
 """
-
 from __future__ import annotations
 
 import csv
@@ -16,6 +15,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
+
+from exploreCSR.combination.tracker import FeaturePoseTracker
 
 from .config import CameraConfig, PipelineConfig
 from .depth import DepthAnything
@@ -398,3 +399,194 @@ def run_video(
         print(f"[VIDEO] Processed {sampled_idx} frames")
 
     return results
+
+
+# ======================================================================
+# Tracked variants (with DINO feature extraction + delta plotting)
+# ======================================================================
+
+
+def run_sequence_tracked(
+    image_paths: List[str],
+    weights_path: str,
+    prompt: str,
+    camera: Optional[CameraConfig] = None,
+    feature_key: str = "object_mean",
+    verbose: bool = True,
+) -> "FeaturePoseTracker":
+    """
+    Run CAPTRA over a sequence AND track DINO features per frame.
+
+    Same as ``run_sequence`` but also extracts object-level DINO features
+    at each frame and returns a ``FeaturePoseTracker`` with everything
+    needed to plot delta_feature vs delta_pose.
+
+    Parameters
+    ----------
+    image_paths  : image paths in temporal order
+    weights_path : DepthAnything checkpoint
+    prompt       : segmentation prompt
+    camera       : camera config (None → defaults)
+    feature_key  : "object_mean" (masked patches) or "cls_token" (global)
+    verbose      : print progress
+
+    Returns
+    -------
+    FeaturePoseTracker with all frames recorded; call .plot() or .summary().
+    """
+    from .combination import FeaturePoseTracker, extract_object_features
+
+    if camera is None:
+        camera = CameraConfig()
+
+    if not image_paths:
+        raise ValueError("No images to process.")
+
+    if verbose:
+        print(f"[TRACKED] {len(image_paths)} frame(s), prompt={prompt!r}")
+
+    converter = DepthAnything(weights_path)
+    segmenter = DINOSegmenter()
+    tracker = FeaturePoseTracker(feature_key=feature_key)
+
+    prev_state: Optional[CAPTRAReferenceState] = None
+    captra: Optional[CAPTRA] = None
+    anchor_extent_mean: Optional[float] = None
+
+    for idx, path in enumerate(image_paths):
+        if verbose:
+            print(f"\n--- Frame {idx}: {path} ---")
+
+        image_tensor, _, original_w, original_h = converter.preprocess(path)
+        rgb = _ensure_size(_load_rgb(path), original_w, original_h)
+
+        if captra is None:
+            captra = _build_captra(camera, original_w, original_h)
+
+        out, prev_state, anchor_extent_mean = _process_single_frame(
+            converter=converter,
+            segmenter=segmenter,
+            captra=captra,
+            image_tensor=image_tensor,
+            rgb=rgb,
+            original_w=original_w,
+            original_h=original_h,
+            prompt=prompt,
+            use_prompt=True,
+            prev_state=prev_state,
+            anchor_extent_mean=anchor_extent_mean,
+        )
+
+        # Extract DINO features using the mask from CAPTRA output
+        mask = out.get("mask", np.zeros((original_h, original_w), dtype=np.uint8))
+        features = extract_object_features(segmenter, image_tensor, mask)
+
+        tracker.add_frame(
+            frame_idx=idx,
+            features=features,
+            captra_output=out,
+            image_path=path,
+        )
+
+        if verbose:
+            print_pose_summary(out)
+            print(f"  masked patches: {features['num_masked_patches']}")
+
+    if verbose:
+        print(f"\n[TRACKED] Done — {len(tracker.frames)} frames recorded")
+
+    return tracker
+
+
+def run_video_tracked(
+    video_path: str,
+    weights_path: str,
+    prompt: str,
+    target_fps: float = 2.0,
+    camera: Optional[CameraConfig] = None,
+    feature_key: str = "object_mean",
+    verbose: bool = True,
+) -> "FeaturePoseTracker":
+    """
+    Run CAPTRA over sampled video frames AND track DINO features.
+
+    Same as ``run_video`` but returns a FeaturePoseTracker.
+    """
+    from .combination import FeaturePoseTracker, extract_object_features
+
+    if camera is None:
+        camera = CameraConfig()
+
+    if not os.path.isfile(video_path):
+        raise FileNotFoundError(f"Video not found: {video_path}")
+
+    converter = DepthAnything(weights_path)
+    segmenter = DINOSegmenter()
+    tracker = FeaturePoseTracker(feature_key=feature_key)
+
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise RuntimeError(f"Failed to open video: {video_path}")
+
+    native_fps = cap.get(cv2.CAP_PROP_FPS)
+    if native_fps <= 0 or np.isnan(native_fps):
+        native_fps = 30.0
+    frame_step = max(1, int(round(native_fps / target_fps)))
+
+    prev_state: Optional[CAPTRAReferenceState] = None
+    captra: Optional[CAPTRA] = None
+    anchor_extent_mean: Optional[float] = None
+
+    frame_idx = -1
+    sampled_idx = 0
+
+    while True:
+        ok, frame_bgr = cap.read()
+        if not ok:
+            break
+        frame_idx += 1
+        if frame_idx % frame_step != 0:
+            continue
+
+        image_tensor, original_w, original_h = converter.frame_to_tensor(frame_bgr)
+        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        rgb = _ensure_size(rgb, original_w, original_h)
+
+        if captra is None:
+            captra = _build_captra(camera, original_w, original_h)
+
+        out, prev_state, anchor_extent_mean = _process_single_frame(
+            converter=converter,
+            segmenter=segmenter,
+            captra=captra,
+            image_tensor=image_tensor,
+            rgb=rgb,
+            original_w=original_w,
+            original_h=original_h,
+            prompt=prompt,
+            use_prompt=True,
+            prev_state=prev_state,
+            anchor_extent_mean=anchor_extent_mean,
+        )
+
+        mask = out.get("mask", np.zeros((original_h, original_w), dtype=np.uint8))
+        features = extract_object_features(segmenter, image_tensor, mask)
+
+        tracker.add_frame(
+            frame_idx=sampled_idx,
+            features=features,
+            captra_output=out,
+            timestamp=frame_idx / native_fps,
+        )
+
+        if verbose:
+            print(f"Frame {sampled_idx} (video {frame_idx}): valid={out.get('valid')}")
+
+        sampled_idx += 1
+
+    cap.release()
+
+    if verbose:
+        print(f"\n[VIDEO-TRACKED] {sampled_idx} frames recorded")
+
+    return tracker

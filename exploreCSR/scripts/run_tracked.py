@@ -89,8 +89,8 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
-    from browncsr.config import CameraConfig
-    from browncsr.pipeline import run_sequence_tracked, run_video_tracked
+    from exploreCSR.config import CameraConfig
+    from exploreCSR.pipeline import run_sequence_tracked, run_video_tracked
 
     camera = CameraConfig(
         fx=args.fx, fy=args.fy, cx=args.cx, cy=args.cy,
