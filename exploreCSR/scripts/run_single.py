@@ -4,7 +4,7 @@ Run the BrownCSR pipeline on a single RGB image.
 
 Usage
 -----
-python -m browncsr.scripts.run_single \\
+python -m exploreCSR.scripts.run_single \\
     --image path/to/image.jpg \\
     --weights path/to/depth_anything_v2_vitb.pth \\
     --prompt "bag" \\
