@@ -200,10 +200,10 @@ class FeaturePoseTracker:
         save_path: Optional[str] = None,
     ) -> None:
         """
-        Generate scatter and time-series plots of delta features vs delta pose.
+        Generate scatter and time-series plots.
 
         Creates a 2×3 figure:
-          Row 1: scatter plots (delta_feature vs translation / rotation / combined)
+          Row 1: scatter plots (motion change on x-axis, feature change on y-axis)
           Row 2: time series  (feature + translation + rotation over frame index)
 
         Parameters
@@ -228,23 +228,23 @@ class FeaturePoseTracker:
         cos = deltas["cosine_similarity"]
 
         fig, axes = plt.subplots(2, 3, figsize=figsize)
-        fig.suptitle("Delta Features vs Delta Pose", fontsize=14, fontweight="bold")
+        fig.suptitle("Motion Change (x) vs Feature Change (y)", fontsize=14, fontweight="bold")
 
-        # --- Row 1: Scatter plots ---
-        axes[0, 0].scatter(df, dt, c=idx, cmap="viridis", edgecolors="k", alpha=0.7)
-        axes[0, 0].set_xlabel("Δ Feature Magnitude")
-        axes[0, 0].set_ylabel("Δ Translation Magnitude")
-        axes[0, 0].set_title("Feature Change vs Translation")
+        # --- Row 1: Scatter plots (motion on x-axis, features on y-axis) ---
+        axes[0, 0].scatter(dt, df, c=idx, cmap="viridis", edgecolors="k", alpha=0.7)
+        axes[0, 0].set_xlabel("Δ Translation Magnitude")
+        axes[0, 0].set_ylabel("Δ Feature Magnitude")
+        axes[0, 0].set_title("Translation vs Feature Change")
 
-        axes[0, 1].scatter(df, dr, c=idx, cmap="viridis", edgecolors="k", alpha=0.7)
-        axes[0, 1].set_xlabel("Δ Feature Magnitude")
-        axes[0, 1].set_ylabel("Δ Rotation Magnitude (rad)")
-        axes[0, 1].set_title("Feature Change vs Rotation")
+        axes[0, 1].scatter(dr, df, c=idx, cmap="viridis", edgecolors="k", alpha=0.7)
+        axes[0, 1].set_xlabel("Δ Rotation Magnitude (rad)")
+        axes[0, 1].set_ylabel("Δ Feature Magnitude")
+        axes[0, 1].set_title("Rotation vs Feature Change")
 
-        sc = axes[0, 2].scatter(df, dp, c=idx, cmap="viridis", edgecolors="k", alpha=0.7)
-        axes[0, 2].set_xlabel("Δ Feature Magnitude")
-        axes[0, 2].set_ylabel("Δ Combined Pose Magnitude")
-        axes[0, 2].set_title("Feature Change vs Combined Pose")
+        sc = axes[0, 2].scatter(dp, df, c=idx, cmap="viridis", edgecolors="k", alpha=0.7)
+        axes[0, 2].set_xlabel("Δ Combined Pose Magnitude")
+        axes[0, 2].set_ylabel("Δ Feature Magnitude")
+        axes[0, 2].set_title("Combined Pose vs Feature Change")
         fig.colorbar(sc, ax=axes[0, 2], label="Frame Index")
 
         # --- Row 2: Time series ---
