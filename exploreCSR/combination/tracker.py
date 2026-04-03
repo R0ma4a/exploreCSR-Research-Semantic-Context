@@ -195,22 +195,40 @@ class FeaturePoseTracker:
 
     def plot(
         self,
-        alpha: float = 0.1,
-        figsize: Tuple[int, int] = (16, 10),
+        figsize: Tuple[int, int] = (20, 10),
         save_path: Optional[str] = None,
+        xlim_trans: Optional[Tuple[float, float]] = None,
+        xlim_rot: Optional[Tuple[float, float]] = None,
+        xlim_pose: Optional[Tuple[float, float]] = None,
+        ylim_feat: Optional[Tuple[float, float]] = None,
+        ylim_trans: Optional[Tuple[float, float]] = None,
+        ylim_rot: Optional[Tuple[float, float]] = None,
+        ylim_cos: Optional[Tuple[float, float]] = None,
+        title: Optional[str] = None,
     ) -> None:
         """
         Generate scatter and time-series plots.
 
-        Creates a 2×3 figure:
-          Row 1: scatter plots (motion change on x-axis, feature change on y-axis)
-          Row 2: time series  (feature + translation + rotation over frame index)
+        Creates a 2×4 figure:
+          Row 1: scatter plots (translation / rotation / combined vs feature)
+          Row 2: time series  (feature / translation / rotation / cosine)
+
+        All axis limits can be fixed so multiple runs on the same video
+        produce visually comparable plots. Pass the same limits to each
+        tracker's .plot() call.
 
         Parameters
         ----------
-        alpha     : rotation scaling factor for combined magnitude
-        figsize   : figure size
-        save_path : if given, save figure to this path instead of showing
+        figsize    : figure size
+        save_path  : save to file instead of showing
+        xlim_trans : fixed x-axis for translation scatter
+        xlim_rot   : fixed x-axis for rotation scatter
+        xlim_pose  : fixed x-axis for combined pose scatter
+        ylim_feat  : fixed y-axis for feature magnitude (scatters + time series)
+        ylim_trans : fixed y-axis for translation time series
+        ylim_rot   : fixed y-axis for rotation time series
+        ylim_cos   : fixed y-axis for cosine dissimilarity time series
+        title      : custom figure title (e.g. "Microphone — 4 FPS")
         """
         import matplotlib.pyplot as plt
 
@@ -227,45 +245,83 @@ class FeaturePoseTracker:
         idx = deltas["frame_indices"]
         cos = deltas["cosine_similarity"]
 
-        fig, axes = plt.subplots(2, 3, figsize=figsize)
-        fig.suptitle("Motion Change (x) vs Feature Change (y)", fontsize=14, fontweight="bold")
+        fig, axes = plt.subplots(2, 4, figsize=figsize)
+        fig.suptitle(
+            title or "Motion Change (x) vs Feature Change (y)",
+            fontsize=14, fontweight="bold",
+        )
 
         # --- Row 1: Scatter plots (motion on x-axis, features on y-axis) ---
         axes[0, 0].scatter(dt, df, c=idx, cmap="viridis", edgecolors="k", alpha=0.7)
         axes[0, 0].set_xlabel("Δ Translation Magnitude")
         axes[0, 0].set_ylabel("Δ Feature Magnitude")
-        axes[0, 0].set_title("Translation vs Feature Change")
+        axes[0, 0].set_title("Translation vs Feature")
+        if xlim_trans: axes[0, 0].set_xlim(xlim_trans)
+        if ylim_feat:  axes[0, 0].set_ylim(ylim_feat)
 
         axes[0, 1].scatter(dr, df, c=idx, cmap="viridis", edgecolors="k", alpha=0.7)
         axes[0, 1].set_xlabel("Δ Rotation Magnitude (rad)")
         axes[0, 1].set_ylabel("Δ Feature Magnitude")
-        axes[0, 1].set_title("Rotation vs Feature Change")
+        axes[0, 1].set_title("Rotation vs Feature")
+        if xlim_rot:  axes[0, 1].set_xlim(xlim_rot)
+        if ylim_feat: axes[0, 1].set_ylim(ylim_feat)
 
         sc = axes[0, 2].scatter(dp, df, c=idx, cmap="viridis", edgecolors="k", alpha=0.7)
         axes[0, 2].set_xlabel("Δ Combined Pose Magnitude")
         axes[0, 2].set_ylabel("Δ Feature Magnitude")
-        axes[0, 2].set_title("Combined Pose vs Feature Change")
+        axes[0, 2].set_title("Combined Pose vs Feature")
         fig.colorbar(sc, ax=axes[0, 2], label="Frame Index")
+        if xlim_pose: axes[0, 2].set_xlim(xlim_pose)
+        if ylim_feat: axes[0, 2].set_ylim(ylim_feat)
 
-        # --- Row 2: Time series ---
-        axes[1, 0].plot(idx, df, "o-", color="tab:blue", label="Δ Feature")
+        # Row 1, col 3: summary stats text
+        axes[0, 3].axis("off")
+        stats_lines = [
+            f"Frames: {len(self.frames)}",
+            f"Valid: {sum(1 for f in self.frames if f.valid)}",
+            f"Feature dim: {self.frames[0].object_feature.shape[0]}",
+            "",
+            f"Δ Feature  mean: {df.mean():.4f}",
+            f"Δ Trans    mean: {dt.mean():.4f}",
+            f"Δ Rot      mean: {dr.mean():.4f}",
+        ]
+        valid_cos = cos[~np.isnan(cos)]
+        if len(valid_cos) > 0:
+            stats_lines.append(f"Cos sim    mean: {valid_cos.mean():.4f}")
+        if len(df) > 2 and np.std(df) > 1e-10 and np.std(dp) > 1e-10:
+            corr = float(np.corrcoef(df, dp)[0, 1])
+            stats_lines.append(f"Corr(feat,pose): {corr:.4f}")
+        axes[0, 3].text(
+            0.1, 0.95, "\n".join(stats_lines),
+            transform=axes[0, 3].transAxes,
+            fontsize=11, verticalalignment="top", fontfamily="monospace",
+        )
+        axes[0, 3].set_title("Summary")
+
+        # --- Row 2: Time series (each in its own panel) ---
+        axes[1, 0].plot(idx, df, "o-", color="tab:blue", markersize=3, linewidth=1)
         axes[1, 0].set_xlabel("Frame Index")
-        axes[1, 0].set_ylabel("Magnitude")
+        axes[1, 0].set_ylabel("Δ Feature Magnitude")
         axes[1, 0].set_title("Feature Change Over Time")
-        axes[1, 0].legend()
+        if ylim_feat: axes[1, 0].set_ylim(ylim_feat)
 
-        axes[1, 1].plot(idx, dt, "s-", color="tab:red", label="Δ Translation")
-        axes[1, 1].plot(idx, dr, "^-", color="tab:green", label="Δ Rotation")
+        axes[1, 1].plot(idx, dt, "s-", color="tab:red", markersize=3, linewidth=1)
         axes[1, 1].set_xlabel("Frame Index")
-        axes[1, 1].set_ylabel("Magnitude")
-        axes[1, 1].set_title("Pose Change Over Time")
-        axes[1, 1].legend()
+        axes[1, 1].set_ylabel("Δ Translation Magnitude")
+        axes[1, 1].set_title("Translation Over Time")
+        if ylim_trans: axes[1, 1].set_ylim(ylim_trans)
 
-        axes[1, 2].plot(idx, 1.0 - cos, "D-", color="tab:purple", label="1 - cos(sim)")
+        axes[1, 2].plot(idx, dr, "^-", color="tab:green", markersize=3, linewidth=1)
         axes[1, 2].set_xlabel("Frame Index")
-        axes[1, 2].set_ylabel("Feature Dissimilarity")
-        axes[1, 2].set_title("Cosine Dissimilarity Over Time")
-        axes[1, 2].legend()
+        axes[1, 2].set_ylabel("Δ Rotation Magnitude (rad)")
+        axes[1, 2].set_title("Rotation Over Time")
+        if ylim_rot: axes[1, 2].set_ylim(ylim_rot)
+
+        axes[1, 3].plot(idx, 1.0 - cos, "D-", color="tab:purple", markersize=3, linewidth=1)
+        axes[1, 3].set_xlabel("Frame Index")
+        axes[1, 3].set_ylabel("1 - cos(sim)")
+        axes[1, 3].set_title("Cosine Dissimilarity Over Time")
+        if ylim_cos: axes[1, 3].set_ylim(ylim_cos)
 
         plt.tight_layout()
 

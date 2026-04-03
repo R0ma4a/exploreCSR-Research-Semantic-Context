@@ -82,6 +82,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--save-plot", type=str, default=None, help="Save plot to file instead of showing.")
     parser.add_argument("--save-csv", type=str, default=None, help="Export per-frame data to CSV.")
     parser.add_argument("--no-plot", action="store_true", help="Skip plotting, only print summary.")
+    parser.add_argument("--title", type=str, default=None, help="Custom plot title (e.g. 'Microphone 4fps').")
+
+    # Axis limits (set these to the same values across runs for comparison)
+    parser.add_argument("--ylim-feat", type=float, nargs=2, default=None, metavar=("MIN", "MAX"), help="Fixed y-axis for feature magnitude.")
+    parser.add_argument("--ylim-trans", type=float, nargs=2, default=None, metavar=("MIN", "MAX"), help="Fixed y-axis for translation.")
+    parser.add_argument("--ylim-rot", type=float, nargs=2, default=None, metavar=("MIN", "MAX"), help="Fixed y-axis for rotation.")
+    parser.add_argument("--ylim-cos", type=float, nargs=2, default=None, metavar=("MIN", "MAX"), help="Fixed y-axis for cosine dissimilarity.")
+    parser.add_argument("--xlim-trans", type=float, nargs=2, default=None, metavar=("MIN", "MAX"), help="Fixed x-axis for translation scatter.")
+    parser.add_argument("--xlim-rot", type=float, nargs=2, default=None, metavar=("MIN", "MAX"), help="Fixed x-axis for rotation scatter.")
+    parser.add_argument("--xlim-pose", type=float, nargs=2, default=None, metavar=("MIN", "MAX"), help="Fixed x-axis for combined pose scatter.")
 
     return parser.parse_args()
 
@@ -131,7 +141,17 @@ def main() -> None:
 
     # Plot
     if not args.no_plot:
-        tracker.plot(save_path=args.save_plot)
+        tracker.plot(
+            save_path=args.save_plot,
+            title=args.title,
+            ylim_feat=tuple(args.ylim_feat) if args.ylim_feat else None,
+            ylim_trans=tuple(args.ylim_trans) if args.ylim_trans else None,
+            ylim_rot=tuple(args.ylim_rot) if args.ylim_rot else None,
+            ylim_cos=tuple(args.ylim_cos) if args.ylim_cos else None,
+            xlim_trans=tuple(args.xlim_trans) if args.xlim_trans else None,
+            xlim_rot=tuple(args.xlim_rot) if args.xlim_rot else None,
+            xlim_pose=tuple(args.xlim_pose) if args.xlim_pose else None,
+        )
 
 
 if __name__ == "__main__":
