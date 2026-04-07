@@ -50,3 +50,5 @@ RGed-research/depth_anything_v2/__pycache__
 RGed-research/imgs
 
 Progress
+
+*.csv
