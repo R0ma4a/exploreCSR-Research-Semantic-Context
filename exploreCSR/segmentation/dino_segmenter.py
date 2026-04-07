@@ -409,6 +409,67 @@ class DINOSegmenter:
             return center_mask
         return current_mask
 
+    @staticmethod
+    def _depth_cleanup(
+        mask: np.ndarray,
+        depth_map: np.ndarray,
+        tolerance: float = 0.15,
+    ) -> np.ndarray:
+        """
+        Remove mask pixels whose depth is far from the object's median depth,
+        then erode edges to remove boundary noise where background bleeds in.
+
+        Parameters
+        ----------
+        mask       : (H, W) binary uint8 mask
+        depth_map  : (H, W) normalized depth map (0–1, from DepthAnything)
+        tolerance  : how far from median depth a pixel can be (in normalized
+                     depth units). 0.10 = 10% of the full depth range.
+
+        Returns
+        -------
+        cleaned mask : (H, W) uint8
+        """
+        if depth_map.shape != mask.shape:
+            depth_map = cv2.resize(
+                depth_map, (mask.shape[1], mask.shape[0]),
+                interpolation=cv2.INTER_LINEAR,
+            )
+
+        mask_bool = mask.astype(bool)
+        masked_depths = depth_map[mask_bool]
+
+        if len(masked_depths) < 10:
+            return mask
+
+        # Use IQR-based range for robustness to edge outliers
+        q25, q75 = np.percentile(masked_depths, [25, 75])
+        median_depth = np.median(masked_depths)
+        iqr = q75 - q25
+
+        # Adaptive tolerance: use the tighter of fixed tolerance or 1.5*IQR
+        adaptive_tol = min(tolerance, max(iqr * 1.5, 0.05))
+
+        depth_diff = np.abs(depth_map - median_depth)
+        depth_ok = depth_diff <= adaptive_tol
+
+        cleaned = (mask_bool & depth_ok).astype(np.uint8)
+
+        # Erode edges to remove boundary pixels that pick up background
+        erode_kernel = np.ones((7, 7), np.uint8)
+        cleaned = cv2.erode(cleaned, erode_kernel, iterations=1)
+
+        # Smooth after erosion
+        kernel = np.ones((5, 5), np.uint8)
+        cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_CLOSE, kernel)
+        cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_OPEN, kernel)
+
+        # Safety: if depth cleanup removed too much, keep original
+        if cleaned.sum() < mask.sum() * 0.15:
+            return mask
+
+        return cleaned
+
     # ==================================================================
     # Prompt-guided segmentation (DINO-only, no CLIP)
     # ==================================================================
@@ -423,21 +484,30 @@ class DINOSegmenter:
         use_edge_refine: bool = True,
         use_bilateral: bool = True,
         use_image_edges: bool = True,
+        depth_map: Optional[np.ndarray] = None,
+        depth_tolerance: float = 0.10,
     ) -> np.ndarray:
         """
         SAM-like segmentation using DINO attention + edge-aware refinement
-        + prompt-derived spatial priors.
+        + prompt-derived spatial priors + optional depth cleanup.
 
         Parameters
         ----------
-        image_tensor   : (1, 3, H, W) float tensor
-        prompt         : text prompt for spatial/semantic priors
-        output_size    : (H_out, W_out) or None (→ input size)
-        keep_fraction  : fraction of attention values to keep as foreground
-        top_k_heads    : number of low-entropy heads (None → auto)
-        use_edge_refine: sharpen mask boundaries using image edges
-        use_bilateral  : bilateral smoothing to reduce noise
-        use_image_edges: use real image edges (True) vs mask edges (False)
+        image_tensor    : (1, 3, H, W) float tensor
+        prompt          : text prompt for spatial/semantic priors
+        output_size     : (H_out, W_out) or None (→ input size)
+        keep_fraction   : fraction of attention values to keep as foreground
+        top_k_heads     : number of low-entropy heads (None → auto)
+        use_edge_refine : sharpen mask boundaries using image edges
+        use_bilateral   : bilateral smoothing to reduce noise
+        use_image_edges : use real image edges (True) vs mask edges (False)
+        depth_map       : (H_out, W_out) normalized depth map. If provided,
+                          mask pixels whose depth differs too much from the
+                          object's median depth are removed. This cleans up
+                          background leakage without cutting through the object.
+        depth_tolerance : how far (in normalized depth units) a pixel can be
+                          from the object's median depth before it's removed.
+                          0.15 = within 15% of the depth range. Lower = tighter.
 
         Returns
         -------
@@ -505,6 +575,10 @@ class DINOSegmenter:
         if mask.mean() > 0.55:
             mask = (1 - mask).astype(np.uint8)
             mask = self.extract_center_component(mask)
+
+        # 8. Depth-based background removal
+        if depth_map is not None:
+            mask = self._depth_cleanup(mask, depth_map, tolerance=depth_tolerance)
 
         return mask
 

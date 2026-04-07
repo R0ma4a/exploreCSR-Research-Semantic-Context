@@ -382,8 +382,20 @@ class CAPTRA:
         # Translation: centroid shift (current - previous)
         translation = current.centroid - previous.centroid
 
+        # --- Axis sign continuity ---
+        # PCA eigenvectors are only defined up to sign (v and -v are both
+        # valid). Between frames, an axis can randomly flip, producing a
+        # ghost π-radian rotation spike. Fix: flip any current axis whose
+        # dot product with the corresponding previous axis is negative.
+        aligned_axes = current.axes.copy()
+        for col in range(3):
+            if np.dot(aligned_axes[:, col], previous.axes[:, col]) < 0:
+                aligned_axes[:, col] *= -1.0
+        if np.linalg.det(aligned_axes) < 0:
+            aligned_axes[:, -1] *= -1.0
+
         # Rotation: best-fit aligning previous axes to current axes
-        R = current.axes @ previous.axes.T
+        R = aligned_axes @ previous.axes.T
         # Orthonormalize via SVD for numerical stability
         U, _, Vt = np.linalg.svd(R)
         rotation_matrix = U @ Vt
@@ -430,160 +442,82 @@ class CAPTRA:
         previous_reference_state: Optional[CAPTRAReferenceState] = None,
     ) -> Dict[str, Any]:
         """
-        Full CAPTRA forward pass for a single frame.
-
-        Parameters
-        ----------
-        rgb:
-            RGB image as H x W x 3 array.
-        depth:
-            Depth map as H x W array.
-        seg_or_mask:
-            Binary mask or segmentation label map (H x W).
-        target_label:
-            Optional label index if `seg_or_mask` is a label map.
-        previous_reference_state:
-            Optional `CAPTRAReferenceState` from the previous frame.
-
-        Returns
-        -------
-        dict
-            Core pose outputs (for graph x-axis):
-            - `pose_vector`
-            - `translation`
-            - `rotation_matrix`
-            - `rotation_euler`
-            - `scale`
-            - `reference_state`
-
-            Plus a rich set of intermediates for debugging and visualization:
-            - `mask`
-            - `masked_rgb`
-            - `masked_depth`
-            - `object_points`
-            - `object_centroid`
-            - `principal_axes`
-            - `object_extents`
-            - `previous_reference_frame`
-            - `current_reference_frame`
-            - `valid` / `message`
-            - any additional diagnostics
+        Minimal CAPTRA forward pass:
+        Returns true 3D translation (NOT pixel motion)
         """
-        region = self.extract_object_region(rgb, depth, seg_or_mask, target_label=target_label)
 
-        mask = region["mask"]
-        masked_rgb = region["masked_rgb"]
-        masked_depth = region["masked_depth"]
+        # -----------------------------
+        # 1. Extract object region
+        # -----------------------------
+        region = self.extract_object_region(
+            rgb, depth, seg_or_mask, target_label=target_label
+        )
+
         valid_indices = region["valid_indices"]
         valid_depth = region["valid_depth"]
 
         if valid_depth.size < self.min_points:
-            # Not enough points to do any meaningful geometry
-            pose_init = self.estimate_pose_change(
-                current=CAPTRAReferenceState(
-                    centroid=np.zeros(3, dtype=np.float64),
-                    axes=np.eye(3, dtype=np.float64),
-                    extents=np.ones(3, dtype=np.float64),
-                    points_sample=None,
-                    meta=None,
-                ),
-                previous=None,
-            )
-
             return {
-                "pose_vector": pose_init["pose_vector"],
-                "translation": pose_init["translation"],
-                "rotation_matrix": pose_init["rotation_matrix"],
-                "rotation_euler": pose_init["rotation_euler"],
-                "scale": pose_init["scale"],
+                "translation": np.zeros(3),
                 "reference_state": None,
-                "mask": mask,
-                "masked_rgb": masked_rgb,
-                "masked_depth": masked_depth,
-                "object_points": np.empty((0, 3), dtype=np.float64),
-                "object_centroid": None,
-                "principal_axes": None,
-                "object_extents": None,
-                "previous_reference_frame": previous_reference_state,
-                "current_reference_frame": None,
                 "valid": False,
-                "message": f"Insufficient valid depth points: {valid_depth.size} < {self.min_points}",
-                "diagnostics": {
-                    "region": region["diagnostics"],
-                    "pose": pose_init["diagnostics"],
-                },
+                "message": "Not enough depth points",
             }
 
-        pc = self.rgbd_to_pointcloud(valid_indices, valid_depth, rgb=rgb)
+        # -----------------------------
+        # 2. Convert to 3D point cloud
+        # -----------------------------
+        pc = self.rgbd_to_pointcloud(
+            valid_indices,
+            valid_depth,
+            rgb=None
+        )
+
         points = pc["points"]
 
-        ref_state, ref_diag = self.estimate_object_reference(points)
-        if ref_state is None:
-            # Geometry failed; propagate diagnostics
-            pose_init = self.estimate_pose_change(
-                current=CAPTRAReferenceState(
-                    centroid=np.zeros(3, dtype=np.float64),
-                    axes=np.eye(3, dtype=np.float64),
-                    extents=np.ones(3, dtype=np.float64),
-                    points_sample=None,
-                    meta=None,
-                ),
-                previous=None,
-            )
-
+        if points.shape[0] < self.min_points:
             return {
-                "pose_vector": pose_init["pose_vector"],
-                "translation": pose_init["translation"],
-                "rotation_matrix": pose_init["rotation_matrix"],
-                "rotation_euler": pose_init["rotation_euler"],
-                "scale": pose_init["scale"],
+                "translation": np.zeros(3),
                 "reference_state": None,
-                "mask": mask,
-                "masked_rgb": masked_rgb,
-                "masked_depth": masked_depth,
-                "object_points": points,
-                "object_centroid": None,
-                "principal_axes": None,
-                "object_extents": None,
-                "previous_reference_frame": previous_reference_state,
-                "current_reference_frame": None,
                 "valid": False,
-                "message": ref_diag.get("message", "Reference estimation failed"),
-                "diagnostics": {
-                    "region": region["diagnostics"],
-                    "reference": ref_diag,
-                    "pose": pose_init["diagnostics"],
-                },
+                "message": "Not enough 3D points",
             }
 
-        pose_out = self.estimate_pose_change(ref_state, previous_reference_state)
+        # -----------------------------
+        # 3. Estimate object reference frame (PCA)
+        # -----------------------------
+        ref_state, ref_diag = self.estimate_object_reference(points)
 
-        output: Dict[str, Any] = {
-            "pose_vector": pose_out["pose_vector"],
-            "translation": pose_out["translation"],
-            "rotation_matrix": pose_out["rotation_matrix"],
-            "rotation_euler": pose_out["rotation_euler"],
-            "scale": pose_out["scale"],
+        if ref_state is None:
+            return {
+                "translation": np.zeros(3),
+                "reference_state": None,
+                "valid": False,
+                "message": "PCA failed",
+            }
+
+        # -----------------------------
+        # 4. Compute pose change
+        # -----------------------------
+        pose = self.estimate_pose_change(
+            current=ref_state,
+            previous=previous_reference_state
+        )
+
+        # -----------------------------
+        # 5. Return ONLY what matters
+        # -----------------------------
+        return {
+            "translation":    pose["translation"],       # (3,) 3D delta (meters)
+            "rotation":       pose["rotation_matrix"],   # (3,3) matrix
+            "rotation_euler": pose["rotation_euler"],    # (3,) XYZ Euler angles (radians)
+            "pose_vector":    pose["pose_vector"],       # (7,) [tx,ty,tz,rx,ry,rz,s]
+            "scale":          pose["scale"],
             "reference_state": ref_state,
-            "mask": mask,
-            "masked_rgb": masked_rgb,
-            "masked_depth": masked_depth,
-            "object_points": points,
-            "object_centroid": ref_state.centroid,
-            "principal_axes": ref_state.axes,
-            "object_extents": ref_state.extents,
-            "previous_reference_frame": previous_reference_state,
-            "current_reference_frame": ref_state,
-            "valid": True,
-            "message": "OK",
-            "diagnostics": {
-                "region": region["diagnostics"],
-                "reference": ref_diag,
-                "pose": pose_out["diagnostics"],
-            },
+            "centroid":       ref_state.centroid,
+            "valid":          True,
+            "message":        "OK",
         }
-
-        return output
 
     # ------------------------------------------------------------------
     # Helpers
