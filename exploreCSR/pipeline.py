@@ -96,11 +96,11 @@ def _process_single_frame(
     use_prompt: bool,
     prev_state: Optional[CAPTRAReferenceState],
     anchor_extent_mean: Optional[float],
-) -> Tuple[Dict[str, Any], Optional[CAPTRAReferenceState], Optional[float]]:
+) -> Tuple[Dict[str, Any], Optional[CAPTRAReferenceState], Optional[float], np.ndarray]:
     """
     Core single-frame processing shared by all pipeline modes.
 
-    Returns (output_dict, updated_prev_state, updated_anchor_extent_mean).
+    Returns (output_dict, updated_prev_state, updated_anchor_extent_mean, mask).
     """
     # Depth
     depth_raw = converter.predict(image_tensor)
@@ -131,7 +131,7 @@ def _process_single_frame(
     ref = out.get("reference_state")
     new_prev = ref if ref is not None else prev_state
 
-    return out, new_prev, anchor_extent_mean
+    return out, new_prev, anchor_extent_mean, mask
 
 
 # ======================================================================
@@ -178,7 +178,7 @@ def run_single(
 
     captra = _build_captra(camera, original_w, original_h)
 
-    out, _, _ = _process_single_frame(
+    out, _, _, _ = _process_single_frame(
         converter=converter,
         segmenter=segmenter,
         captra=captra,
@@ -243,7 +243,7 @@ def run_sequence(
         if captra is None:
             captra = _build_captra(camera, original_w, original_h)
 
-        out, prev_state, anchor_extent_mean = _process_single_frame(
+        out, prev_state, anchor_extent_mean, _ = _process_single_frame(
             converter=converter,
             segmenter=segmenter,
             captra=captra,
@@ -344,7 +344,7 @@ def run_video(
         if captra is None:
             captra = _build_captra(camera, original_w, original_h)
 
-        out, prev_state, anchor_extent_mean = _process_single_frame(
+        out, prev_state, anchor_extent_mean, _ = _process_single_frame(
             converter=converter,
             segmenter=segmenter,
             captra=captra,
@@ -446,7 +446,7 @@ def run_sequence_tracked(
         if captra is None:
             captra = _build_captra(camera, original_w, original_h)
 
-        out, prev_state, anchor_extent_mean = _process_single_frame(
+        out, prev_state, anchor_extent_mean, mask = _process_single_frame(
             converter=converter,
             segmenter=segmenter,
             captra=captra,
@@ -460,7 +460,6 @@ def run_sequence_tracked(
             anchor_extent_mean=anchor_extent_mean,
         )
 
-        mask = out.get("mask", np.zeros((original_h, original_w), dtype=np.uint8))
         features = extract_object_features(segmenter, image_tensor, mask)
 
         tracker.add_frame(
@@ -535,7 +534,7 @@ def run_video_tracked(
         if captra is None:
             captra = _build_captra(camera, original_w, original_h)
 
-        out, prev_state, anchor_extent_mean = _process_single_frame(
+        out, prev_state, anchor_extent_mean, mask = _process_single_frame(
             converter=converter,
             segmenter=segmenter,
             captra=captra,
@@ -549,7 +548,6 @@ def run_video_tracked(
             anchor_extent_mean=anchor_extent_mean,
         )
 
-        mask = out.get("mask", np.zeros((original_h, original_w), dtype=np.uint8))
         features = extract_object_features(segmenter, image_tensor, mask)
 
         tracker.add_frame(

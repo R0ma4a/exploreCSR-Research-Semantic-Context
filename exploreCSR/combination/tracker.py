@@ -25,6 +25,8 @@ class FrameRecord:
     scale: float
     valid: bool
     mask: Optional[np.ndarray] = None
+    patch_feature_map: Optional[np.ndarray] = None
+    image_size: Optional[Tuple[int, int]] = None
     image_path: Optional[str] = None
     timestamp: Optional[float] = None
 
@@ -70,6 +72,8 @@ class FeaturePoseTracker:
             scale=scale,
             valid=valid,
             mask=mask,  # ✅ ADD THIS LINE
+            patch_feature_map=features.get("patch_feature_map"),
+            image_size=features.get("image_size"),
             image_path=image_path,
             timestamp=timestamp,
         ))

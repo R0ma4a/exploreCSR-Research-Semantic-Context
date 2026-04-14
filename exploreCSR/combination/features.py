@@ -38,7 +38,9 @@ def extract_object_features(
 
     Returns
     -------
-    dict with keys: cls_token, patch_mean, object_mean, patch_grid_shape
+    dict with keys:
+      cls_token, patch_mean, object_mean, patch_grid_shape, num_masked_patches,
+      patch_feature_map (C, H_patch, W_patch), image_size (H, W)
     """
     image_tensor = image_tensor.to(segmenter.device)
 
@@ -96,10 +98,14 @@ def extract_object_features(
         if norm > 1e-8:
             feat /= norm
 
+    patch_feature_map = np.transpose(patch_np, (2, 0, 1)).astype(np.float32)  # (D, H_p, W_p)
+
     return {
         "cls_token": cls_token,
         "patch_mean": patch_mean,
         "object_mean": object_mean,
         "patch_grid_shape": (H_p, W_p, D),
         "num_masked_patches": int(num_masked),
+        "patch_feature_map": patch_feature_map,
+        "image_size": (int(H_orig), int(W_orig)),
     }

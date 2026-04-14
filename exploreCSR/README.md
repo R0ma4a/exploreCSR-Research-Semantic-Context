@@ -103,6 +103,33 @@ python -m exploreCSR.scripts.debug_segmentation \
     --weights depth_anything_v2_vitb.pth
 ```
 
+### Tracked Correspondence Feature Analysis
+
+`run_tracked` now supports a correspondence-based analysis mode that tracks
+object points over time and compares feature vectors at matched locations. This
+is more reliable than region-mean pooling when feature activations vary across
+the object surface.
+
+```bash
+python -m exploreCSR.scripts.run_tracked \
+    --video clip.mp4 \
+    --weights depth_anything_v2_vitb.pth \
+    --prompt "bag" \
+    --fps 2.0 \
+    --track-world-points \
+    --max-track-points 300 \
+    --track-min-valid-ratio 0.7 \
+    --track-reference prev \
+    --track-bidirectional-check \
+    --tracked-output-dir outputs/bag_run/tracked_points
+```
+
+Tracked outputs include:
+- per-frame valid track counts
+- trajectory overlays
+- correspondence-aware cosine/L2 feature delta plots
+- `comparison_summary.json` with region-mean vs tracked-point statistics
+
 ### Validation
 
 ```python
