@@ -251,6 +251,234 @@ class FeaturePoseTracker:
 
     # ------------------------------------------------------------------
 
+    def visualize_feature_pca(
+        self,
+        frame_indices: Optional[List[int]] = None,
+        n_cols: int = 4,
+        figsize_per_cell: Tuple[float, float] = (3.0, 3.0),
+        save_path: Optional[str] = None,
+        title: Optional[str] = None,
+        mask_alpha: float = 0.3,
+    ) -> None:
+        """
+        Project each frame's patch feature map from D → 3 via PCA and display
+        it as a colour image.  This reveals *spatial* variation in the features,
+        letting you judge whether mean-pooling discards important structure.
+
+        The PCA is fitted jointly across all selected frames so that colours are
+        comparable between frames.
+
+        Parameters
+        ----------
+        frame_indices : list of ints, optional
+            Which frames to visualise (by position in self.frames, not frame_idx).
+            Defaults to all frames.
+        n_cols : int
+            Number of columns in the subplot grid.
+        figsize_per_cell : (w, h)
+            Size in inches for each subplot cell.
+        save_path : str, optional
+            If given, save the figure instead of showing it.
+        title : str, optional
+            Overall figure title.
+        mask_alpha : float
+            If a binary mask is stored, overlay it at this opacity (0 = off).
+        """
+        import matplotlib.pyplot as plt
+        from sklearn.decomposition import PCA
+
+        # ── select frames that actually have a patch map ──────────────────
+        candidates = (
+            [self.frames[i] for i in frame_indices]
+            if frame_indices is not None
+            else self.frames
+        )
+        frames_with_map = [f for f in candidates if f.patch_feature_map is not None]
+        if not frames_with_map:
+            print("[FeaturePoseTracker] No patch_feature_map found in selected frames.")
+            return
+
+        # ── reshape each map: [D, H, W] → [H*W, D] ───────────────────────
+        def _hw_pixels(f: FrameRecord) -> Tuple[np.ndarray, int, int]:
+            m = np.asarray(f.patch_feature_map, dtype=np.float64)
+            if m.ndim == 2:          # [D, N] — flat spatial tokens
+                D, N = m.shape
+                H = W = int(round(N ** 0.5))
+                if H * W != N:
+                    raise ValueError(
+                        f"Frame {f.frame_idx}: cannot infer (H, W) from flat token count {N}. "
+                        "Store patch_feature_map as [D, H, W]."
+                    )
+                m = m.reshape(D, H, W)
+            D, H, W = m.shape
+            return m.reshape(D, H * W).T, H, W   # → [H*W, D]
+
+        parsed = [_hw_pixels(f) for f in frames_with_map]
+        all_pixels = np.concatenate([p for p, _, _ in parsed], axis=0)   # [N_total, D]
+
+        # ── fit PCA on the joint pixel set ────────────────────────────────
+        pca = PCA(n_components=3, random_state=0)
+        pca.fit(all_pixels)
+        explained = pca.explained_variance_ratio_
+
+        # ── layout ────────────────────────────────────────────────────────
+        n = len(frames_with_map)
+        n_cols = min(n_cols, n)
+        n_rows = (n + n_cols - 1) // n_cols
+        fig, axes = plt.subplots(
+            n_rows, n_cols,
+            figsize=(figsize_per_cell[0] * n_cols, figsize_per_cell[1] * n_rows),
+        )
+        axes = np.array(axes).reshape(-1)   # always 1-D
+
+        fig.suptitle(
+            title or (
+                f"PCA Feature Visualisation  —  "
+                f"PC1-3 explain {100*explained.sum():.1f}% of variance  "
+                f"({100*explained[0]:.1f} / {100*explained[1]:.1f} / {100*explained[2]:.1f}%)"
+            ),
+            fontsize=11, fontweight="bold",
+        )
+
+        for ax, frame, (pixels, H, W) in zip(axes, frames_with_map, parsed):
+            rgb_flat = pca.transform(pixels)           # [H*W, 3]
+
+            # Normalise each channel to [0, 1] independently for display
+            lo, hi = rgb_flat.min(axis=0), rgb_flat.max(axis=0)
+            denom = np.where(hi - lo > 1e-10, hi - lo, 1.0)
+            rgb_flat = (rgb_flat - lo) / denom
+            rgb_img = rgb_flat.reshape(H, W, 3).clip(0, 1)
+
+            ax.imshow(rgb_img, interpolation="nearest")
+
+            # Optionally overlay the stored binary mask
+            if frame.mask is not None and mask_alpha > 0:
+                msk = np.asarray(frame.mask, dtype=np.float32)
+                if msk.ndim == 2 and msk.shape == (H, W):
+                    overlay = np.zeros((H, W, 4), dtype=np.float32)
+                    overlay[..., 3] = (1.0 - msk) * mask_alpha   # darken background
+                    ax.imshow(overlay, interpolation="nearest")
+
+            ax.set_title(f"Frame {frame.frame_idx}", fontsize=8)
+            ax.axis("off")
+
+        # Hide any unused subplot cells
+        for ax in axes[n:]:
+            ax.axis("off")
+
+        # ── per-frame spatial-variation annotation ─────────────────────────
+        #    Print mean intra-frame pixel std (averaged over D) as a proxy for
+        #    how much structure the mean pool discards.
+        print("\n[FeaturePoseTracker] Spatial variation per frame "
+              "(higher → mean-pool discards more structure):")
+        print(f"  {'frame_idx':>9}  {'pixel_std_mean':>14}  {'pixel_std/feat_norm':>20}")
+        for frame, (pixels, H, W) in zip(frames_with_map, parsed):
+            per_dim_std  = pixels.std(axis=0)          # [D]
+            mean_std     = per_dim_std.mean()           # scalar
+            feat_norm    = np.linalg.norm(pixels.mean(axis=0))
+            ratio        = mean_std / feat_norm if feat_norm > 1e-10 else float("nan")
+            print(f"  {frame.frame_idx:>9}  {mean_std:>14.4f}  {ratio:>20.4f}")
+
+        plt.tight_layout()
+        if save_path:
+            plt.savefig(save_path, dpi=150, bbox_inches="tight")
+            print(f"[FeaturePoseTracker] PCA visualisation saved to {save_path}")
+        else:
+            plt.show()
+
+    # ------------------------------------------------------------------
+
+    def assess_spatial_variation(self) -> Dict[str, Any]:
+        """
+        Quantify how valid the spatial mean-pool is, without plotting.
+
+        For every frame that has a patch_feature_map, compute:
+          - ``pixel_std_mean``    : mean per-dimension std across spatial locations
+          - ``pixel_std_max``     : max per-dimension std
+          - ``variation_ratio``   : pixel_std_mean / ||mean_feature||
+                                    ≈ how much structure mean-pooling throws away
+          - ``pca_top3_variance`` : fraction of variance in the first 3 PCs
+                                    (high → a 3-colour PCA image is representative)
+
+        Returns a list of per-frame dicts plus an ``aggregate`` entry.
+        """
+        from sklearn.decomposition import PCA
+
+        frames_with_map = [f for f in self.frames if f.patch_feature_map is not None]
+        if not frames_with_map:
+            print("[FeaturePoseTracker] No patch_feature_map found; skipping spatial variation.")
+            return {}
+
+        records: List[Dict[str, Any]] = []
+        all_pixels_list = []
+
+        for frame in frames_with_map:
+            m = np.asarray(frame.patch_feature_map, dtype=np.float64)
+            if m.ndim == 2:
+                D, N = m.shape
+                H = W = int(round(N ** 0.5))
+                m = m.reshape(D, H, W)
+            D, H, W = m.shape
+            pixels = m.reshape(D, H * W).T           # [H*W, D]
+            all_pixels_list.append(pixels)
+
+            per_dim_std  = pixels.std(axis=0)        # [D]
+            mean_feat    = pixels.mean(axis=0)        # [D]
+            feat_norm    = np.linalg.norm(mean_feat)
+
+            pca = PCA(n_components=min(3, D), random_state=0).fit(pixels)
+            top3_var = float(pca.explained_variance_ratio_.sum())
+
+            rec = {
+                "frame_idx":        frame.frame_idx,
+                "spatial_h":        H,
+                "spatial_w":        W,
+                "feature_dim":      D,
+                "pixel_std_mean":   float(per_dim_std.mean()),
+                "pixel_std_max":    float(per_dim_std.max()),
+                "variation_ratio":  float(per_dim_std.mean() / feat_norm) if feat_norm > 1e-10 else float("nan"),
+                "pca_top3_variance": top3_var,
+            }
+            records.append(rec)
+
+        # Aggregate across frames
+        all_pixels = np.concatenate(all_pixels_list, axis=0)
+        global_pca  = PCA(n_components=min(3, all_pixels.shape[1]), random_state=0).fit(all_pixels)
+        aggregate = {
+            "num_frames_with_map":        len(frames_with_map),
+            "mean_variation_ratio":       float(np.mean([r["variation_ratio"] for r in records
+                                                         if not np.isnan(r["variation_ratio"])])),
+            "mean_pca_top3_variance":     float(np.mean([r["pca_top3_variance"] for r in records])),
+            "global_pca_top3_variance":   float(global_pca.explained_variance_ratio_.sum()),
+        }
+
+        print("\n=== Spatial Feature Variation Assessment ===")
+        print(f"  {'frame_idx':>9}  {'H×W':>7}  {'D':>5}  "
+              f"{'std_mean':>9}  {'var_ratio':>10}  {'PCA top-3%':>11}")
+        for r in records:
+            print(
+                f"  {r['frame_idx']:>9}  "
+                f"{r['spatial_h']}×{r['spatial_w']:>3}  "
+                f"{r['feature_dim']:>5}  "
+                f"{r['pixel_std_mean']:>9.4f}  "
+                f"{r['variation_ratio']:>10.4f}  "
+                f"{100*r['pca_top3_variance']:>10.1f}%"
+            )
+        print(f"\n  Aggregate:")
+        for k, v in aggregate.items():
+            print(f"    {k}: {v:.4f}" if isinstance(v, float) else f"    {k}: {v}")
+
+        hint = aggregate["mean_variation_ratio"]
+        if hint > 0.3:
+            print("\n  ⚠  High variation ratio (>0.3): mean-pooling likely discards significant"
+                  " spatial structure. Consider using patch-level features or attention pooling.")
+        else:
+            print("\n  ✓  Low variation ratio: mean-pooling is a reasonable summary for these frames.")
+
+        return {"per_frame": records, "aggregate": aggregate}
+
+    # ------------------------------------------------------------------
+
     def summary(self) -> Dict[str, Any]:
         deltas = self.compute_deltas()
         n = len(self.frames)
