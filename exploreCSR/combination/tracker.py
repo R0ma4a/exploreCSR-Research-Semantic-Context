@@ -71,7 +71,7 @@ class FeaturePoseTracker:
             rotation_euler=rotation_euler,
             scale=scale,
             valid=valid,
-            mask=mask,  # ✅ ADD THIS LINE
+            mask=mask,  
             patch_feature_map=features.get("patch_feature_map"),
             image_size=features.get("image_size"),
             image_path=image_path,
@@ -251,6 +251,35 @@ class FeaturePoseTracker:
 
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _foreground_patches(
+        pixels: np.ndarray,          # [H*W, D]
+        mask: Optional[np.ndarray],  # full-res binary mask, or None
+        H: int,
+        W: int,
+    ) -> np.ndarray:
+        """
+        Return only the rows of ``pixels`` that correspond to foreground
+        patch tokens.  If no mask is stored, all patches are returned.
+
+        The pipeline mask is full-resolution (e.g. 480×640); it is resized
+        to the patch grid (H, W) with nearest-neighbour interpolation so
+        that a patch token is foreground if *any* of its source pixels were
+        labelled foreground.
+        """
+        if mask is None:
+            return pixels
+        import cv2 as _cv2
+        msk = np.asarray(mask, dtype=np.float32)
+        if msk.ndim != 2:
+            return pixels
+        if msk.shape != (H, W):
+            msk = _cv2.resize(msk, (W, H), interpolation=_cv2.INTER_NEAREST)
+        fg = msk.reshape(-1) > 0.5          # [H*W] bool
+        return pixels[fg] if fg.any() else pixels
+
+    # ------------------------------------------------------------------
+
     def visualize_feature_pca(
         self,
         frame_indices: Optional[List[int]] = None,
@@ -351,10 +380,15 @@ class FeaturePoseTracker:
 
             ax.imshow(rgb_img, interpolation="nearest")
 
-            # Optionally overlay the stored binary mask
+            # Optionally overlay the stored binary mask.
+            # The pipeline stores a full-resolution mask; resize it to the
+            # patch grid (H, W) so the shape check always passes.
             if frame.mask is not None and mask_alpha > 0:
                 msk = np.asarray(frame.mask, dtype=np.float32)
-                if msk.ndim == 2 and msk.shape == (H, W):
+                if msk.ndim == 2:
+                    if msk.shape != (H, W):
+                        import cv2 as _cv2
+                        msk = _cv2.resize(msk, (W, H), interpolation=_cv2.INTER_NEAREST)
                     overlay = np.zeros((H, W, 4), dtype=np.float32)
                     overlay[..., 3] = (1.0 - msk) * mask_alpha   # darken background
                     ax.imshow(overlay, interpolation="nearest")
@@ -367,17 +401,18 @@ class FeaturePoseTracker:
             ax.axis("off")
 
         # ── per-frame spatial-variation annotation ─────────────────────────
-        #    Print mean intra-frame pixel std (averaged over D) as a proxy for
-        #    how much structure the mean pool discards.
-        print("\n[FeaturePoseTracker] Spatial variation per frame "
-              "(higher → mean-pool discards more structure):")
-        print(f"  {'frame_idx':>9}  {'pixel_std_mean':>14}  {'pixel_std/feat_norm':>20}")
+        #    mean_reconstruction_error = mean(||p_i - mu||) over foreground patches.
+        #    Directly answers: on average, how far is each patch from the mean used
+        #    to represent it?  Compare against delta_feature_mag — if they are
+        #    similar in magnitude, frame-to-frame deltas are drowned in pooling noise.
+        print("\n[FeaturePoseTracker] Mean-pool reconstruction error per frame "
+              "(compare against delta_feature_mag — if similar, pooling is lossy):")
+        print(f"  {'frame_idx':>9}  {'patches':>7}  {'mean_recon_err':>14}")
         for frame, (pixels, H, W) in zip(frames_with_map, parsed):
-            per_dim_std  = pixels.std(axis=0)          # [D]
-            mean_std     = per_dim_std.mean()           # scalar
-            feat_norm    = np.linalg.norm(pixels.mean(axis=0))
-            ratio        = mean_std / feat_norm if feat_norm > 1e-10 else float("nan")
-            print(f"  {frame.frame_idx:>9}  {mean_std:>14.4f}  {ratio:>20.4f}")
+            fg_pixels = FeaturePoseTracker._foreground_patches(pixels, frame.mask, H, W)
+            mu = fg_pixels.mean(axis=0)
+            recon_err = float(np.linalg.norm(fg_pixels - mu, axis=1).mean())
+            print(f"  {frame.frame_idx:>9}  {len(fg_pixels):>7}  {recon_err:>14.4f}")
 
         plt.tight_layout()
         if save_path:
@@ -392,13 +427,21 @@ class FeaturePoseTracker:
         """
         Quantify how valid the spatial mean-pool is, without plotting.
 
-        For every frame that has a patch_feature_map, compute:
-          - ``pixel_std_mean``    : mean per-dimension std across spatial locations
-          - ``pixel_std_max``     : max per-dimension std
-          - ``variation_ratio``   : pixel_std_mean / ||mean_feature||
-                                    ≈ how much structure mean-pooling throws away
-          - ``pca_top3_variance`` : fraction of variance in the first 3 PCs
-                                    (high → a 3-colour PCA image is representative)
+        For every frame that has a patch_feature_map, compute (over foreground
+        patches only):
+
+          - ``mean_reconstruction_error`` : mean(||p_i - mu||) where mu is the
+                                            spatial mean.  This is the primary
+                                            validity metric: it lives in the same
+                                            feature-space units as delta_feature_mag,
+                                            so you can directly compare them.  If
+                                            mean_reconstruction_error >> delta_feature_mag,
+                                            frame-to-frame deltas are dominated by
+                                            pooling noise rather than actual motion.
+          - ``pixel_std_mean``            : mean per-dimension std (secondary diagnostic)
+          - ``pixel_std_max``             : max per-dimension std
+          - ``pca_top3_variance``         : fraction of variance in the first 3 PCs
+                                            (high -> PCA colour image is representative)
 
         Returns a list of per-frame dicts plus an ``aggregate`` entry.
         """
@@ -419,25 +462,27 @@ class FeaturePoseTracker:
                 H = W = int(round(N ** 0.5))
                 m = m.reshape(D, H, W)
             D, H, W = m.shape
-            pixels = m.reshape(D, H * W).T           # [H*W, D]
-            all_pixels_list.append(pixels)
+            pixels    = m.reshape(D, H * W).T                                    # [H*W, D]
+            fg_pixels = FeaturePoseTracker._foreground_patches(pixels, frame.mask, H, W)
+            all_pixels_list.append(fg_pixels)
 
-            per_dim_std  = pixels.std(axis=0)        # [D]
-            mean_feat    = pixels.mean(axis=0)        # [D]
-            feat_norm    = np.linalg.norm(mean_feat)
+            mu          = fg_pixels.mean(axis=0)
+            per_dim_std = fg_pixels.std(axis=0)
+            recon_err   = float(np.linalg.norm(fg_pixels - mu, axis=1).mean())
 
-            pca = PCA(n_components=min(3, D), random_state=0).fit(pixels)
+            pca = PCA(n_components=min(3, D), random_state=0).fit(fg_pixels)
             top3_var = float(pca.explained_variance_ratio_.sum())
 
             rec = {
-                "frame_idx":        frame.frame_idx,
-                "spatial_h":        H,
-                "spatial_w":        W,
-                "feature_dim":      D,
-                "pixel_std_mean":   float(per_dim_std.mean()),
-                "pixel_std_max":    float(per_dim_std.max()),
-                "variation_ratio":  float(per_dim_std.mean() / feat_norm) if feat_norm > 1e-10 else float("nan"),
-                "pca_top3_variance": top3_var,
+                "frame_idx":                 frame.frame_idx,
+                "spatial_h":                 H,
+                "spatial_w":                 W,
+                "feature_dim":               D,
+                "num_fg_patches":            int(len(fg_pixels)),
+                "mean_reconstruction_error": recon_err,
+                "pixel_std_mean":            float(per_dim_std.mean()),
+                "pixel_std_max":             float(per_dim_std.max()),
+                "pca_top3_variance":         top3_var,
             }
             records.append(rec)
 
@@ -445,35 +490,35 @@ class FeaturePoseTracker:
         all_pixels = np.concatenate(all_pixels_list, axis=0)
         global_pca  = PCA(n_components=min(3, all_pixels.shape[1]), random_state=0).fit(all_pixels)
         aggregate = {
-            "num_frames_with_map":        len(frames_with_map),
-            "mean_variation_ratio":       float(np.mean([r["variation_ratio"] for r in records
-                                                         if not np.isnan(r["variation_ratio"])])),
-            "mean_pca_top3_variance":     float(np.mean([r["pca_top3_variance"] for r in records])),
-            "global_pca_top3_variance":   float(global_pca.explained_variance_ratio_.sum()),
+            "num_frames_with_map":             len(frames_with_map),
+            "mean_reconstruction_error":       float(np.mean([r["mean_reconstruction_error"] for r in records])),
+            "mean_pca_top3_variance":          float(np.mean([r["pca_top3_variance"] for r in records])),
+            "global_pca_top3_variance":        float(global_pca.explained_variance_ratio_.sum()),
         }
 
         print("\n=== Spatial Feature Variation Assessment ===")
-        print(f"  {'frame_idx':>9}  {'H×W':>7}  {'D':>5}  "
-              f"{'std_mean':>9}  {'var_ratio':>10}  {'PCA top-3%':>11}")
+        print(f"  {'frame_idx':>9}  {'H×W':>7}  {'D':>5}  {'fg_patches':>10}  "
+              f"{'mean_recon_err':>14}  {'PCA top-3%':>11}")
         for r in records:
             print(
                 f"  {r['frame_idx']:>9}  "
                 f"{r['spatial_h']}×{r['spatial_w']:>3}  "
                 f"{r['feature_dim']:>5}  "
-                f"{r['pixel_std_mean']:>9.4f}  "
-                f"{r['variation_ratio']:>10.4f}  "
+                f"{r['num_fg_patches']:>10}  "
+                f"{r['mean_reconstruction_error']:>14.4f}  "
                 f"{100*r['pca_top3_variance']:>10.1f}%"
             )
         print(f"\n  Aggregate:")
         for k, v in aggregate.items():
             print(f"    {k}: {v:.4f}" if isinstance(v, float) else f"    {k}: {v}")
 
-        hint = aggregate["mean_variation_ratio"]
+        hint = aggregate["mean_reconstruction_error"]
         if hint > 0.3:
-            print("\n  ⚠  High variation ratio (>0.3): mean-pooling likely discards significant"
-                  " spatial structure. Consider using patch-level features or attention pooling.")
+            print("\n  ⚠  High reconstruction error (>0.3): mean-pooling discards significant"
+                  " spatial structure. Compare against your delta_feature_mag — if they are"
+                  " similar, frame-to-frame deltas are dominated by pooling noise.")
         else:
-            print("\n  ✓  Low variation ratio: mean-pooling is a reasonable summary for these frames.")
+            print("\n  ✓  Low reconstruction error: mean-pooling is a reasonable summary for these frames.")
 
         return {"per_frame": records, "aggregate": aggregate}
 
