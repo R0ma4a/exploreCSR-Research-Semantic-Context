@@ -71,7 +71,7 @@ class FeaturePoseTracker:
             rotation_euler=rotation_euler,
             scale=scale,
             valid=valid,
-            mask=mask,  
+            mask=mask,  # ✅ ADD THIS LINE
             patch_feature_map=features.get("patch_feature_map"),
             image_size=features.get("image_size"),
             image_path=image_path,
@@ -549,9 +549,31 @@ class FeaturePoseTracker:
             if len(df) > 2 and np.std(df) > 1e-10 and np.std(dp) > 1e-10:
                 stats["correlation_feature_pose"] = float(np.corrcoef(df, dp)[0, 1])
 
+        # Mean-pool validity: mean(||p_i - mu||) over foreground patches.
+        # Computed here without the full assess_spatial_variation overhead.
+        frames_with_map = [f for f in self.frames if f.patch_feature_map is not None]
+        if frames_with_map:
+            errs = []
+            for frame in frames_with_map:
+                m = np.asarray(frame.patch_feature_map, dtype=np.float64)
+                if m.ndim == 2:
+                    D, N = m.shape
+                    S = int(round(N ** 0.5))
+                    m = m.reshape(D, S, S)
+                D, H, W = m.shape
+                pixels    = m.reshape(D, H * W).T
+                fg_pixels = FeaturePoseTracker._foreground_patches(pixels, frame.mask, H, W)
+                mu        = fg_pixels.mean(axis=0)
+                errs.append(float(np.linalg.norm(fg_pixels - mu, axis=1).mean()))
+            stats["mean_reconstruction_error"] = float(np.mean(errs))
+
         print("=== FeaturePoseTracker Summary ===")
         for k, v in stats.items():
             print(f"  {k}: {v:.6f}" if isinstance(v, float) else f"  {k}: {v}")
+        if "mean_reconstruction_error" in stats and "delta_feature_mag_mean" in stats:
+            ratio = stats["mean_reconstruction_error"] / max(stats["delta_feature_mag_mean"], 1e-10)
+            flag  = "⚠  pooling noise may dominate deltas" if ratio > 1.0 else "✓  deltas are meaningful"
+            print(f"  recon_err / delta_feat_mean = {ratio:.3f}  →  {flag}")
         return stats
 
     # ------------------------------------------------------------------
