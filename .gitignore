@@ -28,6 +28,7 @@ RGed-research/checkpoints/
 exploreCSR/checkpoints/
 
 # ── Data and outputs ────────────────────────────────────────────────────────────
+*_meta.txt
 *.npy
 *.npz
 *.csv
