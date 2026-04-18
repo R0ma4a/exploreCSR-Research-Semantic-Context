@@ -28,6 +28,7 @@ RGed-research/checkpoints/
 exploreCSR/checkpoints/
 
 # ── Data and outputs ────────────────────────────────────────────────────────────
+*.tar
 *_meta.txt
 *.npy
 *.npz
@@ -40,7 +41,7 @@ exploreCSR/archived_results/
 
 # ── Images / video (generated outputs only — src images tracked separately) ────
 # Uncomment if you do NOT want to track any image files:
-# *.png
+*.png
 # *.jpg
 # *.jpeg
 # *.mp4
