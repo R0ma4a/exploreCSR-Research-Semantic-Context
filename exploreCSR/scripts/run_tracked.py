@@ -89,6 +89,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--save-csv", type=str, default=None, help="Export per-frame data to CSV.")
     parser.add_argument("--no-plot", action="store_true", help="Skip plotting, only print summary.")
     parser.add_argument("--preview", action="store_true", help="Show live frame preview (mask overlay + pose) while processing.")
+    parser.add_argument("--fit-coupling", action="store_true",
+                        help="Fit and print the ICP rotation-translation coupling coefficient α. "
+                             "Run this on a translation-only baseline, then pass the result as --coupling-alpha.")
+    parser.add_argument("--coupling-alpha", type=float, default=0.0, metavar="ALPHA",
+                        help="Coupling correction: subtract α × cumulative_translation from ICP "
+                             "accumulated rotation (°/depth-unit). Get α from --fit-coupling on a "
+                             "translation baseline.")
     parser.add_argument("--title", type=str, default=None, help="Custom plot title (e.g. 'Microphone 4fps').")
 
     # Axis limits (set these to the same values across runs for comparison)
@@ -358,6 +365,11 @@ def main() -> None:
     # Summary
     tracker.summary()
 
+    # Coupling fit (translation baseline workflow)
+    if args.fit_coupling:
+        alpha = tracker.fit_coupling_alpha()
+        print(f"\n[coupling] Use --coupling-alpha {alpha:.4f} on rotation runs to correct ICP.")
+
     # CSV
     if args.save_csv:
         tracker.to_csv(args.save_csv)
@@ -367,6 +379,7 @@ def main() -> None:
         tracker.plot(
             save_path=args.save_plot,
             title=args.title,
+            coupling_alpha=args.coupling_alpha,
             ylim_feat=tuple(args.ylim_feat) if args.ylim_feat else None,
             ylim_trans=tuple(args.ylim_trans) if args.ylim_trans else None,
             ylim_rot=tuple(args.ylim_rot) if args.ylim_rot else None,

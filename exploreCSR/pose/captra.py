@@ -308,12 +308,12 @@ class CAPTRA:
             device=self.device,
         )
         if pcl is None:
-            return self._invalid("No valid depth points inside mask")
+            return self._invalid("No valid depth points inside mask", point_cloud=None)
 
         try:
             pose = _estimate_pose_single(self._model, pcl, self._prev_pose, self.device)
         except Exception as exc:
-            return self._invalid(f"CAPTRA inference error: {exc}")
+            return self._invalid(f"CAPTRA inference error: {exc}", point_cloud=pcl)
 
         self._prev_pose = pose
 
@@ -330,10 +330,11 @@ class CAPTRA:
             "scale":           s,
             "valid":           True,
             "message":         "CAPTRA OK",
+            "point_cloud":     pcl,
         }
 
     @staticmethod
-    def _invalid(msg: str) -> Dict[str, Any]:
+    def _invalid(msg: str, point_cloud=None) -> Dict[str, Any]:
         return {
             "translation":     np.zeros(3, dtype=np.float64),
             "rotation_matrix": np.eye(3,  dtype=np.float64),
@@ -342,4 +343,5 @@ class CAPTRA:
             "scale":           1.0,
             "valid":           False,
             "message":         msg,
+            "point_cloud":     point_cloud,
         }
