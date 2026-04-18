@@ -69,12 +69,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--weights", type=str, required=True, help="DepthAnything checkpoint.")
     parser.add_argument("--prompt", type=str, required=True, help="Segmentation prompt.")
 
-    # Camera
-    parser.add_argument("--fx", type=float, default=500.0)
-    parser.add_argument("--fy", type=float, default=500.0)
-    parser.add_argument("--cx", type=float, default=None)
-    parser.add_argument("--cy", type=float, default=None)
-    parser.add_argument("--depth-scale", type=float, default=1.0)
+    # Neural CAPTRA
+    parser.add_argument("--rot-dir",   type=str, required=True,
+                        help="CAPTRA rotation net checkpoint dir (e.g. RGed-research/captra/runs/6_mug_rot)")
+    parser.add_argument("--coord-dir", type=str, required=True,
+                        help="CAPTRA coordinate net checkpoint dir (e.g. RGed-research/captra/runs/6_mug_coord)")
+    parser.add_argument("--category",  type=int, default=6,
+                        help="NOCS category index: 1=bottle 2=bowl 3=camera 4=can 5=laptop 6=mug")
 
     # Feature config
     parser.add_argument(
@@ -87,6 +88,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--save-plot", type=str, default=None, help="Save plot to file instead of showing.")
     parser.add_argument("--save-csv", type=str, default=None, help="Export per-frame data to CSV.")
     parser.add_argument("--no-plot", action="store_true", help="Skip plotting, only print summary.")
+    parser.add_argument("--preview", action="store_true", help="Show live frame preview (mask overlay + pose) while processing.")
     parser.add_argument("--title", type=str, default=None, help="Custom plot title (e.g. 'Microphone 4fps').")
 
     # Axis limits (set these to the same values across runs for comparison)
@@ -319,24 +321,21 @@ def _run_tracked_point_analysis(args: argparse.Namespace, tracker, frames_rgb: L
 def main() -> None:
     args = parse_args()
 
-    from exploreCSR.config import CameraConfig
     from exploreCSR.pipeline import run_sequence_tracked, run_video_tracked
-
-    camera = CameraConfig(
-        fx=args.fx, fy=args.fy, cx=args.cx, cy=args.cy,
-        depth_scale=args.depth_scale,
-    )
 
     paths: List[str] = []
     if args.video:
         # Video mode
         tracker = run_video_tracked(
-            video_path=args.video,
-            weights_path=args.weights,
-            prompt=args.prompt,
-            target_fps=args.fps,
-            camera=camera,
-            feature_key=args.feature_key,
+            video_path   = args.video,
+            weights_path = args.weights,
+            prompt       = args.prompt,
+            rot_dir      = args.rot_dir,
+            coord_dir    = args.coord_dir,
+            category     = args.category,
+            target_fps   = args.fps,
+            feature_key  = args.feature_key,
+            show_preview = args.preview,
         )
     else:
         # Image sequence mode
@@ -346,11 +345,14 @@ def main() -> None:
             return
 
         tracker = run_sequence_tracked(
-            image_paths=paths,
-            weights_path=args.weights,
-            prompt=args.prompt,
-            camera=camera,
-            feature_key=args.feature_key,
+            image_paths  = paths,
+            weights_path = args.weights,
+            prompt       = args.prompt,
+            rot_dir      = args.rot_dir,
+            coord_dir    = args.coord_dir,
+            category     = args.category,
+            feature_key  = args.feature_key,
+            show_preview = args.preview,
         )
 
     # Summary
@@ -368,10 +370,6 @@ def main() -> None:
             ylim_feat=tuple(args.ylim_feat) if args.ylim_feat else None,
             ylim_trans=tuple(args.ylim_trans) if args.ylim_trans else None,
             ylim_rot=tuple(args.ylim_rot) if args.ylim_rot else None,
-            ylim_cos=tuple(args.ylim_cos) if args.ylim_cos else None,
-            xlim_trans=tuple(args.xlim_trans) if args.xlim_trans else None,
-            xlim_rot=tuple(args.xlim_rot) if args.xlim_rot else None,
-            xlim_pose=tuple(args.xlim_pose) if args.xlim_pose else None,
         )
 
     if args.track_world_points:

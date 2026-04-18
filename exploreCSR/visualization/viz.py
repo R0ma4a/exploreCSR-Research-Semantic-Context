@@ -253,27 +253,21 @@ def compare_pointclouds(
 
 
 def print_pose_summary(output_dict: Dict[str, Any]) -> None:
-    """
-    Print a concise textual summary of CAPTRA pose outputs.
-
-    Parameters
-    ----------
-    output_dict:
-        Dictionary returned by `CAPTRA.forward`.
-    """
+    """Print a concise summary of neural CAPTRA pose output for one frame."""
     valid = output_dict.get("valid", True)
-    msg = output_dict.get("message", "")
-    translation = output_dict.get("translation")
-    rotation_euler = output_dict.get("rotation_euler")
-    scale = output_dict.get("scale")
+    msg   = output_dict.get("message", "")
+    t     = output_dict.get("translation")
+    R     = output_dict.get("rotation_matrix")
+    s     = output_dict.get("scale")
 
-    print("=== CAPTRA Pose Summary ===")
-    print(f"Valid: {valid} ({msg})")
-    if translation is not None:
-        print(f"Translation: {translation}")
-    if rotation_euler is not None:
-        rot_deg = np.degrees(rotation_euler)
-        print(f"Rotation (Euler XYZ, deg): {rot_deg}")
-    if scale is not None:
-        print(f"Scale: {scale}")
+    status = "OK" if valid else "INVALID"
+    print(f"  [{status}] {msg}")
+    if t is not None:
+        print(f"  translation : [{t[0]:.4f}, {t[1]:.4f}, {t[2]:.4f}]")
+    if R is not None:
+        det   = float(np.linalg.det(R))
+        ortho = float(np.linalg.norm(R.T @ R - np.eye(3), ord="fro"))
+        print(f"  rotation    : det={det:.6f}  ortho_err={ortho:.2e}")
+    if s is not None:
+        print(f"  scale       : {s:.4f}")
 

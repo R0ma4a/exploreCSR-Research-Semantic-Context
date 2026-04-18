@@ -105,3 +105,21 @@ class DepthAnything:
 
         combined = np.hstack((rgb_image, depth_color))
         return combined
+
+    def frame_to_tensor(self, frame_bgr):
+        """Convert a BGR numpy frame (from cv2.VideoCapture) to (tensor, orig_w, orig_h)."""
+        image = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        orig_h, orig_w = image.shape[:2]
+        image = cv2.resize(image, (518, 518))
+        image = image.astype(np.float32) / 255.0
+        image = np.transpose(image, (2, 0, 1))
+        tensor = torch.from_numpy(image).unsqueeze(0)
+        return tensor.to(self.device), orig_w, orig_h
+
+    def predict(self, tensor):
+        """Alias for predict_depth — used by pose_pipeline."""
+        return self.predict_depth(tensor)
+
+    def postprocess(self, depth, orig_w, orig_h):
+        """Alias for process_depth — used by pose_pipeline."""
+        return self.process_depth(depth, orig_w, orig_h)

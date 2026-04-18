@@ -1,11 +1,7 @@
-from .captra import CAPTRA, CAPTRAReferenceState
-from .surface import compute_surface_delta_poses, compute_delta_pose_magnitudes
-from .validate import run_all_synthetic_checks
+from .captra import CAPTRA, CATEGORY_NAMES, depth_norm_to_metric
 
 __all__ = [
     "CAPTRA",
-    "CAPTRAReferenceState",
-    "compute_surface_delta_poses",
-    "compute_delta_pose_magnitudes",
-    "run_all_synthetic_checks",
+    "CATEGORY_NAMES",
+    "depth_norm_to_metric",
 ]

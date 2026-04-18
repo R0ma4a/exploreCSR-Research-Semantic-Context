@@ -17,18 +17,15 @@ import numpy as np
 class CameraConfig:
     """Pinhole camera intrinsics and depth settings."""
 
-    fx: float = 500.0
-    fy: float = 500.0
-    cx: Optional[float] = None  # None → image_width / 2
-    cy: Optional[float] = None  # None → image_height / 2
-    depth_scale: float = 1.0
+    fx: float = 591.0       # default: NOCS real camera
+    fy: float = 590.0
+    cx: Optional[float] = 322.0
+    cy: Optional[float] = 244.0
 
-    def intrinsics_matrix(self, image_width: int, image_height: int) -> np.ndarray:
-        """Build a 3×3 intrinsics matrix K, filling cx/cy from image size if needed."""
-        cx = self.cx if self.cx is not None else image_width / 2.0
-        cy = self.cy if self.cy is not None else image_height / 2.0
+    def intrinsics_matrix(self, image_width: int = 0, image_height: int = 0) -> np.ndarray:
+        """Build a 3×3 intrinsics matrix K."""
         return np.array(
-            [[self.fx, 0.0, cx], [0.0, self.fy, cy], [0.0, 0.0, 1.0]],
+            [[self.fx, 0.0, self.cx], [0.0, self.fy, self.cy], [0.0, 0.0, 1.0]],
             dtype=np.float64,
         )
 
@@ -55,25 +52,24 @@ class SegmentationConfig:
     use_edge_refine: bool = True
     use_bilateral: bool = True
     use_image_edges: bool = True
-    # For generate_object_mask (unsupervised)
     unsupervised_keep_fraction: float = 0.38
     use_depth_fusion: bool = True
 
 
 @dataclass
 class CAPTRAConfig:
-    """CAPTRA pose estimation configuration."""
+    """Neural CAPTRA checkpoint paths and inference settings."""
 
-    min_points: int = 50
-    pca_eps: float = 1e-6
-    max_points_for_state: int = 10_000
+    rot_dir: str = ""        # e.g. RGed-research/captra/runs/6_mug_rot
+    coord_dir: str = ""      # e.g. RGed-research/captra/runs/6_mug_coord
+    category: int = 6        # NOCS category index (1=bottle … 6=mug)
+    num_points: int = 4096   # point cloud size fed to PointNet2
 
 
 @dataclass
 class PipelineConfig:
     """Top-level pipeline configuration combining all sub-configs."""
 
-    camera: CameraConfig = field(default_factory=CameraConfig)
     depth: DepthConfig = field(default_factory=DepthConfig)
     segmentation: SegmentationConfig = field(default_factory=SegmentationConfig)
     captra: CAPTRAConfig = field(default_factory=CAPTRAConfig)

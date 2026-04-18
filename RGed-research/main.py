@@ -1,5 +1,7 @@
+import cv2
+
 import depth_anything
-import dino
+from dino_segmenter import DINOSegmenter
 import numpy as np
  
 # ------------------------------------------------
@@ -16,7 +18,7 @@ prompt = "salt and pepper shaker"  # Example prompt for object segmentation
  
 # -- Initialize Models --
 converter = depth_anything.DepthAnything(rae_weights_path)
-segmenter = dino.dino()
+segmenter = DINOSegmenter(model_name="vit_small_patch16_224.dino")
  
 # -- Preprocess Image --
 image_tensor, rgb_image, original_width, original_height = converter.image_to_tensor(image_path)
@@ -25,27 +27,3 @@ image_tensor, rgb_image, original_width, original_height = converter.image_to_te
 depth = converter.predict_depth(image_tensor)
 depth_norm = converter.process_depth(depth, original_width, original_height)
  
-# -- Generate Object Mask Unsupervised --
-#mask = segmenter.generate_object_mask(
-#    image_tensor,
-#    depth_norm,
-#    (original_height, original_width)
-#)
- 
-# -- Generate Object Mask with Prompt --
-mask = segmenter.segment_from_prompt(
-    image_tensor,
-    prompt,
-    output_size=(original_height, original_width)
-)
- 
-# -- Debug check --
-print("Mask unique values:", np.unique(mask))
- 
-# -- Visualizations --
- 
-# Overlay mask on original image
-segmenter.visualize_mask_overlay(image_path, mask)
- 
-# Visualize masked image
-segmenter.visualize_masked_image(image_path, mask)
