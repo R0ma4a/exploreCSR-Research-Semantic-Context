@@ -33,6 +33,11 @@ import json
 import os
 from typing import List, Optional
 
+CATEGORY_NAMES = {
+    1: "bottle", 2: "bowl", 3: "camera",
+    4: "can",    5: "laptop", 6: "mug",
+}
+
 import cv2
 import numpy as np
 
@@ -70,10 +75,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prompt", type=str, required=True, help="Segmentation prompt.")
 
     # Neural CAPTRA
-    parser.add_argument("--rot-dir",   type=str, required=True,
-                        help="CAPTRA rotation net checkpoint dir (e.g. RGed-research/captra/runs/6_mug_rot)")
-    parser.add_argument("--coord-dir", type=str, required=True,
-                        help="CAPTRA coordinate net checkpoint dir (e.g. RGed-research/captra/runs/6_mug_coord)")
+    parser.add_argument("--captra-weights-dir", type=str, default=None, metavar="DIR",
+                        help="Base runs/ directory containing all CAPTRA checkpoints. "
+                             "Auto-derives --rot-dir and --coord-dir from --category. "
+                             "E.g. weights/captra/runs → 6_mug_rot, 6_mug_coord.")
+    parser.add_argument("--rot-dir",   type=str, default=None,
+                        help="CAPTRA rotation net checkpoint dir (overrides --captra-weights-dir).")
+    parser.add_argument("--coord-dir", type=str, default=None,
+                        help="CAPTRA coordinate net checkpoint dir (overrides --captra-weights-dir).")
     parser.add_argument("--category",  type=int, default=6,
                         help="NOCS category index: 1=bottle 2=bowl 3=camera 4=can 5=laptop 6=mug")
 
@@ -329,6 +338,16 @@ def main() -> None:
     args = parse_args()
 
     from exploreCSR.pipeline import run_sequence_tracked, run_video_tracked
+
+    # Resolve CAPTRA checkpoint dirs
+    if args.captra_weights_dir and not (args.rot_dir and args.coord_dir):
+        cat_name = CATEGORY_NAMES.get(args.category, str(args.category))
+        args.rot_dir   = os.path.join(args.captra_weights_dir, f"{args.category}_{cat_name}_rot")
+        args.coord_dir = os.path.join(args.captra_weights_dir, f"{args.category}_{cat_name}_coord")
+    if not args.rot_dir or not args.coord_dir:
+        raise SystemExit(
+            "Error: supply either --captra-weights-dir or both --rot-dir and --coord-dir."
+        )
 
     paths: List[str] = []
     if args.video:

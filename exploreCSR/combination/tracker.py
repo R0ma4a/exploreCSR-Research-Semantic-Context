@@ -189,20 +189,39 @@ class FeaturePoseTracker:
         tgt: np.ndarray,
         n_pts: int = 256,
         max_iter: int = 30,
+        max_rotation_deg: float = 45.0,
     ) -> float:
         """
-        Estimate rotation angle (degrees) between two point clouds using ICP.
+        Estimate signed rotation angle (degrees) between two point clouds using ICP.
 
-        Both clouds are centered before alignment so translation is removed.
-        Returns NaN if ICP cannot converge (too few points or poor overlap).
+        Point clouds are projected to the unit sphere (point / |point|) before
+        alignment. Zoom (radial camera motion) changes |point| but not direction,
+        so sphere coordinates are invariant to zoom and DepthAnything depth-scale
+        drift — only genuine angular rotation moves points on the sphere.
+
+        Returns NaN if ICP cannot converge, too few points, or the result exceeds
+        max_rotation_deg (indicates a bad local minimum, not genuine rotation).
         """
         try:
             from scipy.spatial import KDTree
         except ImportError:
             return np.nan
 
-        src_c = (src - src.mean(0)).astype(np.float64)
-        tgt_c = (tgt - tgt.mean(0)).astype(np.float64)
+        src_arr = np.asarray(src, dtype=np.float64)
+        tgt_arr = np.asarray(tgt, dtype=np.float64)
+
+        # Project to unit sphere: point / |point|.
+        # Zoom (radial motion) changes |point| but not point/|point|, so sphere
+        # coordinates are invariant to zoom and depth-scale drift.  Only genuine
+        # angular rotation moves points on the sphere.
+        r_src = np.linalg.norm(src_arr, axis=1, keepdims=True)
+        r_tgt = np.linalg.norm(tgt_arr, axis=1, keepdims=True)
+        src_s = src_arr[r_src.ravel() > 1e-8] / r_src[r_src.ravel() > 1e-8]
+        tgt_s = tgt_arr[r_tgt.ravel() > 1e-8] / r_tgt[r_tgt.ravel() > 1e-8]
+
+        # Center to remove in-plane translation effect
+        src_c = src_s - src_s.mean(0)
+        tgt_c = tgt_s - tgt_s.mean(0)
 
         rng = np.random.default_rng(42)
         if len(src_c) > n_pts:
@@ -244,7 +263,25 @@ class FeaturePoseTracker:
                 break
 
         cos_total = float(np.clip((np.trace(R_total) - 1) / 2, -1, 1))
-        return float(np.degrees(np.arccos(cos_total)))
+        angle_rad = float(np.arccos(cos_total))
+
+        # Reject bad ICP solutions (landed in wrong local minimum).
+        if float(np.degrees(angle_rad)) > max_rotation_deg:
+            return np.nan
+
+        # Sign by Y component of the rotation axis so left/right are distinguishable.
+        # Camera frame (X right, Y down, Z forward): rotating around -Y = turning right
+        # (right-hand rule: thumb points up/-Y, fingers curl from Z toward X = object's
+        # left face comes forward = appears to turn right in camera view).
+        sin_angle = np.sin(angle_rad)
+        if sin_angle > 1e-8:
+            axis_y = (R_total[0, 2] - R_total[2, 0]) / (2.0 * sin_angle)
+            # Negate so positive = turning right in camera view
+            sign = -np.sign(axis_y) if abs(axis_y) > 1e-3 else 1.0
+        else:
+            sign = 1.0  # near-zero rotation — sign is arbitrary
+
+        return float(np.degrees(angle_rad)) * sign
 
     def fit_coupling_alpha(self) -> float:
         """
@@ -334,7 +371,8 @@ class FeaturePoseTracker:
             deltas    = self.compute_deltas()
             dt        = deltas["delta_translation_mag"]
             cum_trans = np.concatenate([[0.0], np.cumsum(dt)])
-            accumulated = np.maximum(0.0, accumulated - coupling_alpha * cum_trans)
+            # Subtract spurious coupling linearly — no floor clamp so signed rotation is preserved.
+            accumulated = accumulated - coupling_alpha * cum_trans
 
         return {
             "delta_icp_deg":       delta_icp,
@@ -453,22 +491,22 @@ class FeaturePoseTracker:
         save_path: Optional[str] = None,
         title: Optional[str] = None,
         smooth_window: int = 5,
-        coupling_alpha: float = 0.0,
+        coupling_alpha: float = 5.4053,
         ylim_feat:  Optional[Tuple[float, float]] = None,
         ylim_trans: Optional[Tuple[float, float]] = None,
         ylim_rot:   Optional[Tuple[float, float]] = None,
     ) -> None:
         """
-        3×3 figure — each panel has room to breathe.
+        3×3 figure:
 
-        Row 1  (absolute translation, one axis per panel):
+        Row 0  (absolute translation, one axis per panel):
           tx  |  ty  |  tz
 
-        Row 2  (absolute rotation & frame-to-frame deltas):
-          Rotation ° from frame 0  |  Δ Feature (L2)  |  Δ Translation
+        Row 1  (ICP rotation accumulation + deltas):
+          ICP Rotation (accumulated)  |  Δ Feature (L2)  |  Δ Translation
 
-        Row 3  (rotation delta & correlation scatter plots):
-          Δ Rotation (°)  |  Scatter: Δtranslation vs Δfeature  |  Scatter: Δrotation vs Δfeature
+        Row 2  (scale + correlation scatter plots):
+          Scale over time  |  Scatter: Δtranslation vs Δfeature  |  Scatter: |Δrotation ICP| vs Δfeature
 
         A summary text block appears below the figure.
         Rolling-mean trend lines (window = smooth_window) are overlaid on delta panels.
@@ -491,24 +529,23 @@ class FeaturePoseTracker:
         cos  = deltas["cosine_similarity"]
         didx = deltas["frame_indices"].astype(float)
 
-        trans = abs_poses["translations"]     # (N, 3)
-        rang  = abs_poses["rotation_angles"]  # (N,) CAPTRA absolute
-        aidx  = abs_poses["frame_indices"].astype(float)
-        valid = abs_poses["valid"]
+        trans  = abs_poses["translations"]     # (N, 3)
+        scales = abs_poses["scales"]           # (N,) CAPTRA predicted scale
+        aidx   = abs_poses["frame_indices"].astype(float)
+        valid  = abs_poses["valid"]
 
-        # ICP rotation — use when available, fall back to CAPTRA
-        icp_available   = icp["available"]
-        icp_accum       = icp["accumulated_deg"]   if icp_available else rang
-        icp_delta       = icp["delta_icp_deg"]     if icp_available else dr
-        icp_aidx        = icp["frame_indices"].astype(float) if icp_available else aidx
+        # ICP rotation — fall back to CAPTRA delta if point clouds unavailable
+        icp_available = icp["available"]
+        icp_accum     = icp["accumulated_deg"]
+        icp_delta     = icp["delta_icp_deg"]
+        icp_aidx      = icp["frame_indices"].astype(float) if icp_available else aidx
         if icp_available:
-            if icp.get("corrected"):
-                rot_label = f"ICP Accumulated [α-corrected α={coupling_alpha:.3f}]"
-            else:
-                rot_label = "ICP Accumulated"
+            rot_label = (
+                f"ICP Accumulated [α-corrected, α={coupling_alpha:.4f}]"
+                if icp.get("corrected") else "ICP Accumulated"
+            )
         else:
-            rot_label = "CAPTRA (unreliable)"
-        delta_rot_label = "Δ Rotation ICP (°)" if icp_available else "Δ Rotation CAPTRA (°)"
+            rot_label = "CAPTRA (no point clouds)"
 
         # ── style helpers ────────────────────────────────────────────────────
         LABEL_FS, TICK_FS, TITLE_FS = 11, 10, 12
@@ -532,14 +569,12 @@ class FeaturePoseTracker:
                 return None, None
             kernel   = np.ones(w) / w
             smoothed = np.convolve(vals, kernel, mode="same")
-            # mask edge artifacts (first and last w//2 values)
             half = w // 2
             mask = np.zeros(len(smoothed), dtype=bool)
             mask[half: len(smoothed) - half] = True
             return smoothed, mask
 
         def _pearson_r(x, y):
-            """NaN-safe Pearson r — returns (r, mask) using only finite pairs."""
             mask = np.isfinite(x) & np.isfinite(y)
             if mask.sum() < 3 or np.std(x[mask]) < 1e-10 or np.std(y[mask]) < 1e-10:
                 return np.nan, mask
@@ -597,9 +632,11 @@ class FeaturePoseTracker:
             _style(a, ylabel="Displacement from start (depth units)",
                    title_str=f"Translation from Start  —  {axis_name} axis")
 
-        # ── Row 1: rotation + deltas ──────────────────────────────────────────
+        # ── Row 1: ICP rotation accumulation + deltas ─────────────────────────
         a = axes[1][0]
-        a.plot(icp_aidx, icp_accum, "o-", color="#9467bd", markersize=4, linewidth=1.5, alpha=0.7)
+        if icp_available:
+            a.plot(icp_aidx, icp_accum, "o-", color="#9467bd",
+                   markersize=4, linewidth=1.5, alpha=0.7)
         _mark_invalid(a, aidx, valid)
         a.axhline(0, color="k", lw=0.6, alpha=0.25)
         _style(a, ylabel="Degrees", title_str=f"Rotation from Frame 0  [{rot_label}]")
@@ -612,12 +649,13 @@ class FeaturePoseTracker:
                          ylabel="Δ Translation (depth units)", title_str="Translation Change per Frame",
                          ylim=ylim_trans)
 
-        # ── Row 2: rotation delta + scatter plots ─────────────────────────────
-        # ICP delta uses aidx (same length as icp_delta = N-1)
-        icp_didx = icp_aidx[1:] if icp_available else didx
-        _line_with_trend(axes[2][0], icp_didx, icp_delta, "#2ca02c",
-                         ylabel=delta_rot_label, title_str="Rotation Change per Frame",
-                         ylim=ylim_rot)
+        # ── Row 2: scale + scatter plots ──────────────────────────────────────
+        a = axes[2][0]
+        a.plot(aidx, scales, "o-", color="#e377c2", markersize=4, linewidth=1.5, alpha=0.7)
+        _mark_invalid(a, aidx, valid)
+        s0 = scales[valid][0] if valid.any() else scales[0]
+        a.axhline(s0, color="k", lw=0.7, alpha=0.3, linestyle=":")
+        _style(a, ylabel="Scale (CAPTRA)", title_str="Object Scale over Time")
 
         sc1 = _scatter_with_r(axes[2][1], dt, df,
                                xlabel="Δ Translation (depth units)",
@@ -626,39 +664,39 @@ class FeaturePoseTracker:
                                cvals=didx)
         fig.colorbar(sc1, ax=axes[2][1], label="Frame index", shrink=0.8)
 
-        # Scatter uses ICP delta — align lengths with df
-        dr_plot = icp_delta if icp_available else dr
+        dr_plot = np.abs(icp_delta) if icp_available else dr
+        rot_xlabel = "|Δ Rotation ICP (°)|" if icp_available else "Δ Rotation CAPTRA (°)"
         sc2 = _scatter_with_r(axes[2][2], dr_plot, df,
-                               xlabel=delta_rot_label,
+                               xlabel=rot_xlabel,
                                ylabel="Δ Feature (L2)",
-                               title_str="Rotation vs Feature",
+                               title_str="Rotation Magnitude vs Feature",
                                cvals=didx)
         fig.colorbar(sc2, ax=axes[2][2], label="Frame index", shrink=0.8)
 
         # ── Summary text below figure ─────────────────────────────────────────
-        # Use ICP delta for rotation stats when available (matches scatter plot)
-        dr_stat = icp_delta if icp_available else dr
-        # dr_stat is length N-1; df is also N-1 — safe to correlate directly
-        n_valid = int(valid.sum())
-        vc = cos[~np.isnan(cos)]
-        rot_mu = dr_stat[~np.isnan(dr_stat)].mean() if len(dr_stat) > 0 else 0.0
-        rot_src = "ICP" if icp_available else "CAPTRA"
+        dr_stat  = np.abs(icp_delta) if icp_available else dr
+        rot_src  = "ICP" if icp_available else "CAPTRA"
+        n_valid  = int(valid.sum())
+        vc       = cos[~np.isnan(cos)]
+        rot_mu   = float(np.nanmean(dr_stat)) if len(dr_stat) > 0 else 0.0
+        s_mu     = float(scales[valid].mean()) if valid.any() else float(scales.mean())
         parts = [
             f"Frames: {len(self.frames)}   Valid: {n_valid}   "
             f"Feature dim: {self.frames[0].object_feature.shape[0]}",
             f"Δ Feature μ={df.mean():.4f}   "
             f"Δ Trans μ={dt.mean():.4f}   "
-            f"Δ Rot μ={rot_mu:.2f}° ({rot_src})",
+            f"|Δ Rot| μ={rot_mu:.2f}° ({rot_src})   "
+            f"Scale μ={s_mu:.4f}",
         ]
         if len(vc):
             parts.append(f"Mean cosine similarity: {vc.mean():.4f}")
         if len(df) > 2:
-            r_t,     _ = _pearson_r(dt, df)
-            r_r,     _ = _pearson_r(dr_stat, df)
+            r_t,    _ = _pearson_r(dt, df)
+            r_r,    _ = _pearson_r(dr_stat, df)
             max_t = float(np.nanmax(dt))      if np.nanmax(dt)      > 1e-10 else 1.0
             max_r = float(np.nanmax(dr_stat)) if np.nanmax(dr_stat) > 1e-10 else 1.0
             total_motion = dt / max_t + dr_stat / max_r
-            r_total, _  = _pearson_r(total_motion, df)
+            r_total, _ = _pearson_r(total_motion, df)
             def _fmt(v): return f"{v:.3f}" if not np.isnan(v) else "n/a"
             parts.append(
                 f"r(feat, trans)={_fmt(r_t)}   r(feat, rot {rot_src})={_fmt(r_r)}   "

@@ -35,6 +35,9 @@ def _load_rgb(image_path: str) -> np.ndarray:
     return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
 
 
+_PREVIEW_MAX_DIM = 640   # longest edge of the preview window
+
+
 def _show_preview(
     rgb: np.ndarray,
     mask: np.ndarray,
@@ -59,6 +62,15 @@ def _show_preview(
     )
     cv2.putText(vis_bgr, label, (8, 24), cv2.FONT_HERSHEY_SIMPLEX,
                 0.55, (0, 255, 0) if valid else (0, 0, 255), 1, cv2.LINE_AA)
+
+    # Scale down so the window fits on screen
+    h, w = vis_bgr.shape[:2]
+    if max(h, w) > _PREVIEW_MAX_DIM:
+        scale = _PREVIEW_MAX_DIM / max(h, w)
+        vis_bgr = cv2.resize(vis_bgr, (int(w * scale), int(h * scale)),
+                             interpolation=cv2.INTER_AREA)
+
+    cv2.namedWindow(window_name, cv2.WINDOW_AUTOSIZE)
     cv2.imshow(window_name, vis_bgr)
     cv2.waitKey(1)
 
@@ -287,9 +299,16 @@ def run_video_tracked(
             _show_preview(rgb, mask, out, sampled_idx)
 
         if verbose:
+            mask_px = int(mask.sum()) if mask is not None else 0
+            pcl_mean = out.get("point_cloud")
+            pcl_centroid = (
+                f"centroid=[{pcl_mean.mean(0)[0]:.3f},{pcl_mean.mean(0)[1]:.3f},{pcl_mean.mean(0)[2]:.3f}]"
+                if pcl_mean is not None else "no-pcl"
+            )
             print(
                 f"  Frame {sampled_idx} (video {frame_idx} / {frame_idx/native_fps:.1f}s): "
-                f"valid={out.get('valid')}, msg={out.get('message')}"
+                f"valid={out.get('valid')}, mask_px={mask_px}, {pcl_centroid}, "
+                f"msg={out.get('message')}"
             )
 
         sampled_idx += 1
