@@ -499,8 +499,8 @@ class FeaturePoseTracker:
         """
         3×3 figure:
 
-        Row 0  (absolute translation, one axis per panel):
-          tx  |  ty  |  tz
+        Row 0  (translation wide panel + scale-feature scatter):
+          Translation X/Y/Z (wide)  |  Scatter: Δscale vs Δfeature
 
         Row 1  (ICP rotation accumulation + deltas):
           ICP Rotation (accumulated)  |  Δ Feature (L2)  |  Δ Translation
@@ -526,6 +526,7 @@ class FeaturePoseTracker:
         df   = deltas["delta_feature_mag"]
         dt   = deltas["delta_translation_mag"]
         dr   = deltas["delta_rotation_deg"]
+        ds   = deltas["delta_scale"]
         cos  = deltas["cosine_similarity"]
         didx = deltas["frame_indices"].astype(float)
 
@@ -616,21 +617,37 @@ class FeaturePoseTracker:
             fontsize=15, fontweight="bold", y=0.99,
         )
         gs = GridSpec(3, 3, figure=fig, hspace=0.45, wspace=0.38)
-        axes = [[fig.add_subplot(gs[r, c]) for c in range(3)] for r in range(3)]
+        ax_trans   = fig.add_subplot(gs[0, :2])
+        ax_scale_scatter = fig.add_subplot(gs[0, 2])
+        axes = [
+            [ax_trans, None, ax_scale_scatter],
+            [fig.add_subplot(gs[1, c]) for c in range(3)],
+            [fig.add_subplot(gs[2, c]) for c in range(3)],
+        ]
 
-        # ── Row 0: absolute translation (one axis per panel) ─────────────────
+        # ── Row 0: overlay X/Y/Z translation on one wide panel ───────────────
         t0 = trans[0]
-        for col, (axis_name, color, data) in enumerate([
-            ("X", "#d62728", trans[:, 0] - t0[0]),
-            ("Y", "#2ca02c", trans[:, 1] - t0[1]),
-            ("Z", "#1f77b4", trans[:, 2] - t0[2]),
-        ]):
-            a = axes[0][col]
-            a.plot(aidx, data, "o-", color=color, markersize=4, linewidth=1.5, alpha=0.7)
-            _mark_invalid(a, aidx, valid)
-            a.axhline(0, color="k", lw=0.7, alpha=0.3, linestyle=":")
-            _style(a, ylabel="Displacement from start (depth units)",
-                   title_str=f"Translation from Start  —  {axis_name} axis")
+        for axis_name, color, col_idx in [
+            ("X", "#d62728", 0),
+            ("Y", "#2ca02c", 1),
+            ("Z", "#1f77b4", 2),
+        ]:
+            data = trans[:, col_idx] - t0[col_idx]
+            ax_trans.plot(aidx, data, "o-", color=color, markersize=4,
+                          linewidth=1.5, alpha=0.7, label=axis_name)
+        _mark_invalid(ax_trans, aidx, valid)
+        ax_trans.axhline(0, color="k", lw=0.7, alpha=0.3, linestyle=":")
+        ax_trans.legend(fontsize=9, loc="upper right")
+        _style(ax_trans, ylabel="Displacement from start (depth units)",
+               title_str="Translation from Start  —  X / Y / Z")
+
+        # ── Row 0 col 2: Δ scale vs Δ feature scatter ────────────────────────
+        sc0 = _scatter_with_r(ax_scale_scatter, ds, df,
+                               xlabel="Δ Scale (CAPTRA)",
+                               ylabel="Δ Feature (L2)",
+                               title_str="Scale vs Feature",
+                               cvals=didx)
+        fig.colorbar(sc0, ax=ax_scale_scatter, label="Frame index", shrink=0.8)
 
         # ── Row 1: ICP rotation accumulation + deltas ─────────────────────────
         a = axes[1][0]
@@ -693,6 +710,7 @@ class FeaturePoseTracker:
         if len(df) > 2:
             r_t,    _ = _pearson_r(dt, df)
             r_r,    _ = _pearson_r(dr_stat, df)
+            r_s,    _ = _pearson_r(ds, df)
             max_t = float(np.nanmax(dt))      if np.nanmax(dt)      > 1e-10 else 1.0
             max_r = float(np.nanmax(dr_stat)) if np.nanmax(dr_stat) > 1e-10 else 1.0
             total_motion = dt / max_t + dr_stat / max_r
@@ -700,7 +718,7 @@ class FeaturePoseTracker:
             def _fmt(v): return f"{v:.3f}" if not np.isnan(v) else "n/a"
             parts.append(
                 f"r(feat, trans)={_fmt(r_t)}   r(feat, rot {rot_src})={_fmt(r_r)}   "
-                f"r(feat, total motion)={_fmt(r_total)}"
+                f"r(feat, scale)={_fmt(r_s)}   r(feat, total motion)={_fmt(r_total)}"
             )
         parts.append("Depth units: 0.3≈0 m  |  1.0≈0.7 m  |  2.0≈1.5 m  |  3.3≈3 m")
         fig.text(0.5, 0.005, "   ·   ".join(parts),
